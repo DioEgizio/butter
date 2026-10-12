@@ -75,9 +75,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flatpak-builder
-          key: flatpak-builder-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(env.MANIFEST) }}
+          key: flatpak-builder-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(env.MANIFEST) }}
           restore-keys: |
-            flatpak-builder-v1-${{ runner.os }}-${{ matrix.arch }}-
+            flatpak-builder-v2-${{ runner.os }}-${{ matrix.arch }}-
 
       # flatpak-builder resolves the SDK, the runtime and the Rust extension
       # from the manifest. Whatever the cache restored is skipped; the rest

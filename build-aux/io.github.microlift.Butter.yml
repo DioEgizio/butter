@@ -56,7 +56,17 @@ modules:
       build-args:
         - --share=network
     build-commands:
-      - cargo build --release --locked
+      # vte4-sys finds VTE through pkg-config. Point it at wherever the vte
+      # module put its .pc file, and say so if it is not there at all.
+      - |
+        pc=$(find /app -name vte-2.91-gtk4.pc | head -n 1)
+        if [ -z "$pc" ]; then
+          echo "vte-2.91-gtk4.pc was not installed by the vte module; /app/lib holds:"
+          ls -R /app/lib | head -n 60
+          exit 1
+        fi
+        export PKG_CONFIG_PATH="$(dirname "$pc"):$PKG_CONFIG_PATH"
+        cargo build --release --locked
       - make install PREFIX=/app
     sources:
       - type: dir
