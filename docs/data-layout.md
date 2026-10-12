@@ -9,7 +9,7 @@
 | Preferences | `$XDG_CONFIG_HOME/butter/settings.toml` |
 | Onboarding answers (Flatpak) | `$XDG_CONFIG_HOME/butter/permissions.toml` |
 
-In the Flatpak, these are under `~/.var/app/io.github.microlift.Butter/`.
+In the Flatpak, these are under `~/.var/app/io.github.microlift.butter/`.
 
 A bottle's `prefix/` directory is an ordinary Rosemary prefix. Butter runs
 programs with `ROSEMARY_PREFIX` pointing at it, and manages it with

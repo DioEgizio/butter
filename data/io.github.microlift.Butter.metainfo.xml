@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.microlift.Butter</id>
+  <id>io.github.microlift.butter</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <name>Butter</name>
@@ -20,7 +20,7 @@
       <li>Verify, repair and update a bottle's system files</li>
     </ul>
   </description>
-  <launchable type="desktop-id">io.github.microlift.Butter.desktop</launchable>
+  <launchable type="desktop-id">io.github.microlift.butter.desktop</launchable>
   <developer id="io.github.microlift">
     <name>The Butter Contributors</name>
   </developer>

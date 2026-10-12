@@ -36,7 +36,7 @@
       # Rosemary releases it builds) need, so use the latest stable.
       toolchainFor = pkgs: pkgs.rust-bin.stable.latest.default;
 
-      appId = "io.github.microlift.Butter";
+      appId = "io.github.microlift.butter";
 
       commonFor =
         pkgs:

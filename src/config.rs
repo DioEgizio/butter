@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub const APP_ID: &str = "io.github.microlift.Butter";
+pub const APP_ID: &str = "io.github.microlift.butter";
 pub const APP_NAME: &str = "Butter";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const WEBSITE: &str = "https://github.com/microlift/butter";

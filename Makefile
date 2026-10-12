@@ -6,7 +6,7 @@
 
 PREFIX ?= /usr/local
 DESTDIR ?=
-APP_ID := io.github.microlift.Butter
+APP_ID := io.github.microlift.butter
 CARGO ?= cargo
 
 BINDIR := $(DESTDIR)$(PREFIX)/bin

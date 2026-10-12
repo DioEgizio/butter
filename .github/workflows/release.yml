@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  APP_ID: io.github.microlift.Butter
-  MANIFEST: build-aux/io.github.microlift.Butter.yml
+  APP_ID: io.github.microlift.butter
+  MANIFEST: build-aux/io.github.microlift.butter.yml
 
 jobs:
   build:

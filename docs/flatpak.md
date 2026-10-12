@@ -11,8 +11,8 @@ To build it yourself:
 
 ```sh
 flatpak install flathub org.gnome.Sdk//51 org.freedesktop.Sdk.Extension.rust-stable//26.08
-flatpak-builder --user --install --force-clean build-dir build-aux/io.github.microlift.Butter.yml
-flatpak run io.github.microlift.Butter
+flatpak-builder --user --install --force-clean build-dir build-aux/io.github.microlift.butter.yml
+flatpak run io.github.microlift.butter
 ```
 
 The Flatpak uses the GNOME **SDK** as its runtime, the way GNOME Builder
@@ -27,7 +27,7 @@ through the file chooser. To run programs from a folder without choosing
 them each time, allow it:
 
 ```sh
-flatpak override --user --filesystem=~/Games io.github.microlift.Butter
+flatpak override --user --filesystem=~/Games io.github.microlift.butter
 ```
 
 Some optional features need more. When Butter first starts, it asks which

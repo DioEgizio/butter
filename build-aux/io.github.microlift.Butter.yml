@@ -2,7 +2,7 @@
 # builds link against the same libraries they later run with. That needs a
 # C toolchain and headers at runtime too. To make this work in Flatpak,
 # we use a development runtime like GNOME builder.
-app-id: io.github.microlift.Butter
+app-id: io.github.microlift.butter
 runtime: org.gnome.Sdk
 runtime-version: '51'
 sdk: org.gnome.Sdk

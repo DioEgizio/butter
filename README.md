@@ -35,7 +35,7 @@ Each [release](https://github.com/microlift/butter/releases) has a
 
 ```sh
 flatpak install --user Butter-<version>-x86_64.flatpak
-flatpak run io.github.microlift.Butter
+flatpak run io.github.microlift.butter
 ```
 
 The bundle points at Flathub for the GNOME runtime it needs, so
@@ -47,8 +47,8 @@ To build the Flatpak yourself instead:
 
 ```sh
 flatpak install flathub org.gnome.Sdk//51 org.freedesktop.Sdk.Extension.rust-stable//26.08
-flatpak-builder --user --install --force-clean build-dir build-aux/io.github.microlift.Butter.yml
-flatpak run io.github.microlift.Butter
+flatpak-builder --user --install --force-clean build-dir build-aux/io.github.microlift.butter.yml
+flatpak run io.github.microlift.butter
 ```
 
 To let the Flatpak see a folder of programs, and for details on optional
