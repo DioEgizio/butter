@@ -14,7 +14,7 @@ concurrency:
 
 env:
   APP_ID: io.github.microlift.butter
-  MANIFEST: build-aux/io.github.microlift.butter.yml
+  MANIFEST: build-aux/io.github.microlift.Butter.yml
 
 jobs:
   build:
