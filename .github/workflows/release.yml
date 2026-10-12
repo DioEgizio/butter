@@ -48,10 +48,14 @@ jobs:
             exit 1
           }
 
+      # flatpak-builder runs the host's appstreamcli compose, which renders
+      # the SVG icon through GdkPixbuf. The SVG loader for it comes from
+      # librsvg2-common, only a recommendation, so it is named here; without
+      # it compose fails with file-read-error.
       - name: Install Flatpak tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder elfutils
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder elfutils librsvg2-common
 
       # The GNOME SDK and the Rust extension are the slow part of setup, a
       # few GB downloaded from Flathub. They live in the user installation,
