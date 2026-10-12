@@ -1,0 +1,67 @@
+# Butter compiles Rosemary at runtime, inside the sandbox, so the runners it
+# builds link against the same libraries they later run with. That needs a
+# C toolchain and headers at runtime too. To make this work in Flatpak,
+# we use a development runtime like GNOME builder.
+app-id: io.github.microlift.Butter
+runtime: org.gnome.Sdk
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: butter
+
+# Optional features that need more, such as Rosemary's Steam bridge or
+# shared memory on old X11 setups, are offered when Butter first starts: it
+# shows the `flatpak override` command that grants them. See permissions.rs.
+finish-args:
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+
+cleanup:
+  - /share/doc
+  - /share/man
+
+modules:
+  # VTE draws the terminals of the Process Manager. Only its GTK 4 library
+  # is needed.
+  - name: vte
+    buildsystem: meson
+    config-opts:
+      - -Dgtk3=false
+      - -Dgtk4=true
+      - -Dgir=false
+      - -Dvapi=false
+      - -Ddocs=false
+      - -Dglade=false
+      - -Dapp=false
+      - -D_systemd=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/vte/0.84/vte-0.84.1.tar.xz
+        sha256: aca1caa8478aebcdbb1d67897fb3511eb7601debae6810e16a15b6fa25f31ac8
+
+  - name: butter
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/butter/cargo
+      # Fetches crates while building.
+      # TODO: Use flatpak-cargo-generator for offline builds
+      build-args:
+        - --share=network
+    build-commands:
+      - cargo build --release --locked
+      - make install PREFIX=/app
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - build-dir
+          - .flatpak-builder

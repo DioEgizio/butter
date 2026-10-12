@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.microlift.Butter</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Butter</name>
+  <summary>Run Mac software with Rosemary</summary>
+  <description>
+    <p>
+      Butter manages Rosemary, a compatibility layer that runs macOS applications
+      on Linux. It builds Rosemary releases into runners, and keeps each program
+      in a bottle of its own: a Rosemary prefix with its own Darwin filesystem,
+      settings and environment.
+    </p>
+    <ul>
+      <li>Install the official build of any tagged Rosemary release, build it from source, or add your own build</li>
+      <li>Create bottles with a verified MiniDarwin base system</li>
+      <li>Run app bundles and Mach-O executables with one click</li>
+      <li>Choose native or emulated execution, titlebar and menu styles, and more</li>
+      <li>Verify, repair and update a bottle's system files</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.microlift.Butter.desktop</launchable>
+  <developer id="io.github.microlift">
+    <name>The Butter Contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/microlift/butter</url>
+  <url type="bugtracker">https://github.com/microlift/butter/issues</url>
+  <url type="vcs-browser">https://github.com/microlift/butter</url>
+  <content_rating type="oars-1.1"/>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-10-11">
+      <description>
+        <p>First release: runners built from source, bottles, and program launching.</p>
+      </description>
+    </release>
+  </releases>
+</component>

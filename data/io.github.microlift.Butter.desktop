@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Butter
+GenericName=Rosemary Manager
+Comment=Run Mac software with Rosemary
+Exec=butter
+Icon=io.github.microlift.Butter
+Terminal=false
+Type=Application
+Categories=System;Emulator;GTK;
+Keywords=rosemary;macos;mac;darwin;emulator;compatibility;prefix;bottle;runner;
+StartupNotify=true
+DBusActivatable=false

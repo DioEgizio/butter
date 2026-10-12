@@ -1,0 +1,81 @@
+mod bottle;
+mod config;
+mod github;
+mod markdown;
+mod permissions;
+mod process;
+mod procs;
+mod runner;
+mod sessions;
+mod settings;
+mod supervisor;
+mod toolchain;
+mod ui;
+mod util;
+
+use adw::prelude::*;
+use gtk::{gio, glib};
+
+fn main() -> glib::ExitCode {
+    // Butter starts each program through a copy of itself; see `supervisor`.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|a| a == supervisor::FLAG) {
+        std::process::exit(supervisor::main(args.collect()));
+    }
+
+    glib::set_application_name(config::APP_NAME);
+
+    let app = adw::Application::builder()
+        .application_id(config::APP_ID)
+        .resource_base_path("/io/github/microlift/Butter")
+        .build();
+
+    app.connect_startup(|app| {
+        gtk::Window::set_default_icon_name(config::APP_ID);
+        let about = gio::ActionEntry::builder("about")
+            .activate(|app: &adw::Application, _, _| show_about(app))
+            .build();
+        let quit = gio::ActionEntry::builder("quit")
+            .activate(|app: &adw::Application, _, _| app.quit())
+            .build();
+        app.add_action_entries([about, quit]);
+        app.set_accels_for_action("app.quit", &["<Primary>q"]);
+        app.set_accels_for_action("win.new-bottle", &["<Primary>n"]);
+        app.set_accels_for_action("win.preferences", &["<Primary>comma"]);
+        app.set_accels_for_action("win.show-help-overlay", &["<Primary>question"]);
+    });
+
+    app.connect_activate(|app| {
+        if let Some(window) = app.active_window() {
+            window.present();
+            return;
+        }
+        let window = ui::window::Window::new(app);
+        window.present();
+        ui::permissions::review(&window);
+    });
+
+    app.run()
+}
+
+fn show_about(app: &adw::Application) {
+    let about = adw::AboutDialog::builder()
+        .application_name(config::APP_NAME)
+        .application_icon(config::APP_ID)
+        .developer_name("The Butter Contributors")
+        .version(config::VERSION)
+        .website(config::WEBSITE)
+        .issue_url(format!("{}/issues", config::WEBSITE))
+        .comments("Manage Rosemary runners and bottles for running Mac software")
+        .license_type(gtk::License::Gpl30)
+        .build();
+    about.add_link(
+        "Rosemary",
+        &format!(
+            "https://github.com/{}/{}",
+            config::ROSEMARY_OWNER,
+            config::ROSEMARY_REPO
+        ),
+    );
+    about.present(app.active_window().as_ref());
+}

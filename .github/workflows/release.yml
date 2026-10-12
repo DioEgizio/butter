@@ -1,0 +1,170 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_ID: io.github.microlift.Butter
+  MANIFEST: build-aux/io.github.microlift.Butter.yml
+
+jobs:
+  build:
+    name: package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          # aarch64 has not been run yet:
+          # - arch: aarch64
+          #   runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      # A tag that disagrees with the version in the bundle's name would
+      # publish a file that claims to be a different release.
+      - name: Tag matches version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          test "${GITHUB_REF#refs/tags/}" = "v${version}" || {
+            echo "::error::tag ${GITHUB_REF#refs/tags/} does not match Cargo.toml version ${version}"
+            exit 1
+          }
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+
+      # The GNOME SDK and the Rust extension are the slow part of setup, a
+      # few GB downloaded from Flathub. They live in the user installation,
+      # so caching that directory restores them. Keyed on the manifest, which
+      # names the runtime version: a bump re-downloads, anything else does
+      # not. Restoring an older entry still helps, since `flatpak install`
+      # then only fetches the difference.
+      - name: Restore Flatpak runtimes
+        id: runtimes
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-runtimes-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(env.MANIFEST) }}
+          restore-keys: |
+            flatpak-runtimes-v1-${{ runner.os }}-${{ matrix.arch }}-
+
+      # flatpak-builder's own state: downloaded module sources (VTE)
+      # and the per-module build cache, so unchanged modules are not rebuilt.
+      # Butter itself is the last module, so it is always rebuilt.
+      - name: Restore flatpak-builder state
+        uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles(env.MANIFEST) }}
+          restore-keys: |
+            flatpak-builder-v1-${{ runner.os }}-${{ matrix.arch }}-
+
+      # flatpak-builder resolves the SDK, the runtime and the Rust extension
+      # from the manifest. Whatever the cache restored is skipped; the rest
+      # is fetched or updated.
+      - name: Install Flatpak runtimes
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --install-deps-from=flathub --install-deps-only \
+            --force-clean build-dir "$MANIFEST"
+          du -sh ~/.local/share/flatpak
+
+      - name: Build
+        run: |
+          flatpak-builder --user --force-clean --disable-rofiles-fuse \
+            --repo=repo build-dir "$MANIFEST"
+
+      - name: Bundle
+        id: collect
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          name="Butter-${version}-${{ matrix.arch }}"
+          mkdir dist
+          flatpak build-bundle \
+            --arch=${{ matrix.arch }} \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            repo "dist/${name}.flatpak" "$APP_ID"
+          (cd dist && sha256sum -- * | tee SHA256SUMS.${{ matrix.arch }})
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      # Installs the bundle the way a user would, and checks what landed.
+      - name: Test
+        run: |
+          set -euo pipefail
+          flatpak install --user --noninteractive --bundle "dist/${{ steps.collect.outputs.name }}.flatpak"
+          flatpak info --user "$APP_ID"
+          flatpak run --command=sh "$APP_ID" -c 'test -x /app/bin/butter'
+
+      - name: Attest
+        id: attest
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.flatpak
+
+      - name: Copy attestation to the correct directory
+        if: github.event_name == 'push'
+        run: cp '${{ steps.attest.outputs.bundle-path }}' 'dist/${{ steps.collect.outputs.name }}.intoto.jsonl'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.collect.outputs.name }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Combine checksums
+        run: |
+          cd dist
+          cat SHA256SUMS.* | sort -k2 > SHA256SUMS
+          rm SHA256SUMS.*
+          sha256sum --check SHA256SUMS
+
+      - name: Attest
+        id: attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/SHA256SUMS
+
+      - run: cp '${{ steps.attest.outputs.bundle-path }}' dist/release.intoto.jsonl
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
