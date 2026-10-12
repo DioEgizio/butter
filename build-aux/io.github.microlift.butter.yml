@@ -66,6 +66,10 @@ modules:
           exit 1
         fi
         export PKG_CONFIG_PATH="$(dirname "$pc"):$PKG_CONFIG_PATH"
+        # The vte module may install into /app/lib64, which is not on the
+        # loader's default search path in the sandbox. Bake both locations
+        # into the binary's RPATH so libvte-2.91-gtk4 is always found.
+        export RUSTFLAGS="$RUSTFLAGS -C link-arg=-Wl,-rpath,/app/lib64 -C link-arg=-Wl,-rpath,/app/lib"
         cargo build --release --locked
       - make install PREFIX=/app
     sources:
