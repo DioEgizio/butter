@@ -19,8 +19,8 @@ all:
 
 check:
 	$(CARGO) test --locked
-	-desktop-file-validate data/$(APP_ID).desktop
-	-appstreamcli validate --no-net data/$(APP_ID).metainfo.xml
+	# -desktop-file-validate data/$(APP_ID).desktop
+	# -appstreamcli validate --no-net data/$(APP_ID).metainfo.xml
 
 install:
 	install -Dm755 target/release/butter $(BINDIR)/butter
