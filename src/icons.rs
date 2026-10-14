@@ -3,7 +3,8 @@
 //! Without these, GTK looks icon names up only in the desktop's own theme
 //! (Breeze on KDE, say), which lacks some of them. They are added as a
 //! fallback resource path, so a name the theme lacks resolves to the
-//! Adwaita icon instead of a missing-image placeholder.
+//! Adwaita icon instead of a missing-image placeholder. The theme itself is
+//! also set to Adwaita, so the desktop's choice can't restyle the icons.
 
 use gtk::{gdk, gio, glib};
 
@@ -22,6 +23,9 @@ pub fn init() {
         }
     }
     if let Some(display) = gdk::Display::default() {
+        // Use Adwaita whatever the desktop's theme is, so icons look the
+        // same everywhere. Where it isn't installed, the bundled icons apply.
+        gtk::Settings::for_display(&display).set_gtk_icon_theme_name(Some("Adwaita"));
         gtk::IconTheme::for_display(&display).add_resource_path(RESOURCE_PATH);
     }
 }
