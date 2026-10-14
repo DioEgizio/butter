@@ -9,12 +9,16 @@ use gtk::{gio, glib};
 
 use crate::apps::{self, App};
 use crate::bottle::{
-    self, Backend, Bottle, Decorations, Menu, PrefixHome, Program, SwapInterval, SystemFiles,
+    self, Backend, Bottle, Decorations, EnvTarget, EnvVar, Menu, PrefixHome, PresentMode, Program,
+    SwapInterval, SystemFiles,
 };
+use crate::gpu::{self, Gpu};
 use crate::permissions::{self, Feature};
 use crate::runner;
 use crate::shortcuts;
-use crate::ui::{self, new_bottle, process_manager, program_dialog, task, window::Window};
+use crate::ui::{
+    self, env_dialog, new_bottle, process_manager, program_dialog, task, window::Window,
+};
 
 #[derive(Clone)]
 pub struct BottlePage(Rc<Inner>);
@@ -135,6 +139,7 @@ impl BottlePage {
 
         content.add(&this.programs_group());
         content.add(&this.runtime_group());
+        content.add(&this.graphics_group());
         content.add(&this.display_group());
         content.add(&this.advanced_group());
         content.add(&this.environment_group());
@@ -757,6 +762,109 @@ impl BottlePage {
         row
     }
 
+    /// A combo row choosing one of this computer's GPUs, or none in
+    /// particular.
+    fn gpu_row(
+        &self,
+        title: &str,
+        subtitle: &str,
+        gpus: &[Gpu],
+        get: fn(&bottle::Config) -> Option<Gpu>,
+        set: fn(&mut bottle::Config, Option<Gpu>),
+    ) -> adw::ComboRow {
+        let current = get(&self.bottle().config);
+        let mut choices: Vec<Option<Gpu>> = vec![None];
+        choices.extend(gpus.iter().cloned().map(Some));
+        let mut labels = vec!["Automatic".to_string()];
+        for gpu in gpus {
+            // Two of the same card are told apart by where they sit.
+            let twin = gpus.iter().filter(|g| g.name == gpu.name).count() > 1;
+            labels.push(match twin {
+                true => format!("{} ({})", gpu.name, gpu.slot),
+                false => gpu.name.clone(),
+            });
+        }
+        let selected = match &current {
+            None => 0,
+            Some(gpu) => match gpus.iter().position(|g| g.slot == gpu.slot) {
+                Some(i) => i + 1,
+                // Kept, so that a card taken out for a while is still
+                // asked for when it is back.
+                None => {
+                    labels.push(format!("{} (not found)", gpu.name));
+                    choices.push(current.clone());
+                    choices.len() - 1
+                }
+            },
+        } as u32;
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let row = ui::combo_row(title, Some(subtitle), &label_refs, selected);
+        let weak = self.weak();
+        row.connect_selected_notify(move |row| {
+            if let (Some(inner), Some(gpu)) = (weak.upgrade(), choices.get(row.selected() as usize))
+            {
+                let gpu = gpu.clone();
+                BottlePage(inner).edit(|c| set(c, gpu));
+            }
+        });
+        row
+    }
+
+    fn graphics_group(&self) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::builder().title("Graphics").build();
+        let gpus = gpu::list();
+        group.add(&self.gpu_row(
+            "Metal GPU",
+            "The graphics card Metal programs render on",
+            &gpus,
+            |c| c.metal_gpu.clone(),
+            |c, v| c.metal_gpu = v,
+        ));
+        group.add(&self.choice(
+            "Metal Presentation",
+            Some("How finished frames of Metal programs reach the screen"),
+            PresentMode::ALL,
+            PresentMode::label,
+            |c| c.present_mode,
+            |c, v| c.present_mode = v,
+        ));
+        group.add(&self.gpu_row(
+            "OpenGL GPU",
+            "The graphics card OpenGL programs render on",
+            &gpus,
+            |c| c.opengl_gpu.clone(),
+            |c, v| c.opengl_gpu = v,
+        ));
+        group.add(&self.choice(
+            "OpenGL Sync",
+            Some("Override the swap interval of OpenGL programs"),
+            SwapInterval::ALL,
+            SwapInterval::label,
+            |c| c.swap_interval,
+            |c, v| c.swap_interval = v,
+        ));
+
+        let refresh = adw::SpinRow::builder()
+            .title("Refresh Rate")
+            .subtitle("Hertz programs are told the display runs at; 0 uses the display's own")
+            .adjustment(&gtk::Adjustment::new(0.0, 0.0, 1000.0, 1.0, 10.0, 0.0))
+            .numeric(true)
+            .build();
+        refresh.set_value(self.bottle().config.refresh_rate as f64);
+        let weak = self.weak();
+        refresh.connect_value_notify(move |row| {
+            if let Some(inner) = weak.upgrade() {
+                let rate = row.value().round() as u32;
+                let this = BottlePage(inner);
+                if this.bottle().config.refresh_rate != rate {
+                    this.edit(|c| c.refresh_rate = rate);
+                }
+            }
+        });
+        group.add(&refresh);
+        group
+    }
+
     fn display_group(&self) -> adw::PreferencesGroup {
         let group = adw::PreferencesGroup::builder()
             .title("Display and Input")
@@ -777,14 +885,6 @@ impl BottlePage {
             |c| c.menu,
             |c, v| c.menu = v,
         ));
-        group.add(&self.choice(
-            "OpenGL Sync",
-            Some("Override the swap interval of OpenGL programs"),
-            SwapInterval::ALL,
-            SwapInterval::label,
-            |c| c.swap_interval,
-            |c, v| c.swap_interval = v,
-        ));
         group.add(&self.switch(
             "Control as Command",
             "Let Ctrl stand in for ⌘ in menu shortcuts",
@@ -796,6 +896,12 @@ impl BottlePage {
             "Keep the pointer inside the focused window; some ports need it for dragging",
             |c| c.confine_pointer,
             |c, v| c.confine_pointer = v,
+        ));
+        group.add(&self.switch(
+            "Plain Control-Click",
+            "Treat a click with Ctrl held as an ordinary click, not a secondary click",
+            |c| c.plain_ctrl_click,
+            |c, v| c.plain_ctrl_click = v,
         ));
         group
     }
@@ -840,9 +946,22 @@ impl BottlePage {
         let group = adw::PreferencesGroup::builder()
             .title("Environment Variables")
             .description(
-                "Passed to every program in this bottle. These override the settings above",
+                "Mac programs see only the variables set for them. Variables for \
+                 Rosemary override the settings above",
             )
             .build();
+        let add = adw::ActionRow::builder()
+            .title("Add Variable…")
+            .activatable(true)
+            .build();
+        add.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+        let weak = self.weak();
+        add.connect_activated(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                BottlePage(inner).edit_variable(None);
+            }
+        });
+        // NAME=value, for whoever the name suggests.
         let entry = adw::EntryRow::builder()
             .title("NAME=value")
             .show_apply_button(true)
@@ -856,51 +975,150 @@ impl BottlePage {
                 this.window().notify("Write variables as NAME=value");
                 return;
             };
-            let key = key.trim().to_string();
-            if !bottle::valid_env_name(&key) {
-                this.window()
-                    .notify("Names use letters, digits and underscores");
+            let name = key.trim().to_string();
+            let var = EnvVar {
+                target: EnvTarget::suggested(&name),
+                name,
+                value: Some(value.to_string()),
+                enabled: true,
+            };
+            if let Some(problem) = var.problem() {
+                this.window().notify(problem);
                 return;
             }
-            let value = value.to_string();
-            this.edit(|c| {
-                c.env.insert(key, value);
-            });
+            this.edit(|c| c.set_variable(var));
             entry.set_text("");
             this.refresh_environment();
         });
+        let forward = adw::EntryRow::builder()
+            .title("Passed On to Launched Programs")
+            .tooltip_text(
+                "Comma-separated names of variables a program may set for \
+                 another Mac program it starts. End a name with * to match \
+                 every name it begins",
+            )
+            .text(self.bottle().config.forward_env.join(", "))
+            .show_apply_button(true)
+            .build();
+        let weak = self.weak();
+        forward.connect_apply(move |entry| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = BottlePage(inner);
+            let names: Vec<String> = entry
+                .text()
+                .split(',')
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .collect();
+            if let Some(bad) = names.iter().find(|n| !bottle::valid_forward_name(n)) {
+                this.window()
+                    .notify(&format!("{bad} is not a variable name"));
+                return;
+            }
+            entry.set_text(&names.join(", "));
+            this.edit(|c| c.forward_env = names);
+        });
+
         group.add(&self.0.env);
-        let add = ui::boxed_list();
-        add.append(&entry);
-        add.set_margin_top(12);
-        group.add(&add);
+        let more = ui::boxed_list();
+        more.append(&add);
+        more.append(&entry);
+        more.append(&forward);
+        more.set_margin_top(12);
+        group.add(&more);
         group
+    }
+
+    /// Add a variable, or edit `existing`.
+    fn edit_variable(&self, existing: Option<EnvVar>) {
+        let weak = self.weak();
+        env_dialog::present(self.window(), existing, move |var, renamed| {
+            if let Some(inner) = weak.upgrade() {
+                let this = BottlePage(inner);
+                this.edit(|c| {
+                    match renamed.and_then(|old| c.variables.iter().position(|v| v.name == old)) {
+                        // In its place, unless the new name is taken.
+                        Some(i) if !c.variables.iter().any(|v| v.name == var.name) => {
+                            c.variables[i] = var;
+                        }
+                        Some(i) => {
+                            c.variables.remove(i);
+                            c.set_variable(var);
+                        }
+                        None => c.set_variable(var),
+                    }
+                });
+                this.refresh_environment();
+            }
+        });
     }
 
     fn refresh_environment(&self) {
         let list = &self.0.env;
         list.remove_all();
-        let env = self.bottle().config.env;
-        list.set_visible(!env.is_empty());
-        for (key, value) in env {
+        let variables = self.bottle().config.variables;
+        list.set_visible(!variables.is_empty());
+        for var in variables {
+            let value = match &var.value {
+                Some(value) => glib::markup_escape_text(value).to_string(),
+                None => "<i>This computer's value</i>".to_string(),
+            };
             let row = adw::ActionRow::builder()
-                .title(glib::markup_escape_text(&key))
-                .subtitle(glib::markup_escape_text(&value))
-                .subtitle_selectable(true)
+                .title(glib::markup_escape_text(&var.name))
+                .subtitle(value)
+                .activatable(true)
                 .build();
             row.add_css_class("property");
+            let target = gtk::Label::builder()
+                .label(var.target.label())
+                .valign(gtk::Align::Center)
+                .build();
+            target.add_css_class("dim-label");
+            target.add_css_class("caption");
+            row.add_suffix(&target);
+            let enabled = gtk::Switch::builder()
+                .active(var.enabled)
+                .valign(gtk::Align::Center)
+                .tooltip_text("Set this variable")
+                .build();
+            let weak = self.weak();
+            let name = var.name.clone();
+            enabled.connect_active_notify(move |switch| {
+                if let Some(inner) = weak.upgrade() {
+                    let active = switch.is_active();
+                    BottlePage(inner).edit(|c| {
+                        if let Some(v) = c.variables.iter_mut().find(|v| v.name == name) {
+                            v.enabled = active;
+                        }
+                    });
+                }
+            });
+            row.add_suffix(&enabled);
             let remove = ui::icon_button("user-trash-symbolic", "Remove");
             let weak = self.weak();
+            let name = var.name.clone();
             remove.connect_clicked(move |_| {
                 if let Some(inner) = weak.upgrade() {
                     let this = BottlePage(inner);
-                    this.edit(|c| {
-                        c.env.remove(&key);
-                    });
+                    this.edit(|c| c.variables.retain(|v| v.name != name));
                     this.refresh_environment();
                 }
             });
             row.add_suffix(&remove);
+            let weak = self.weak();
+            row.connect_activated(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    // The switch may have changed it since the row was made.
+                    let this = BottlePage(inner);
+                    let current = this
+                        .bottle()
+                        .config
+                        .variables
+                        .into_iter()
+                        .find(|v| v.name == var.name);
+                    this.edit_variable(current);
+                }
+            });
             list.append(&row);
         }
     }
@@ -1001,13 +1219,7 @@ impl BottlePage {
             .subtitle("Check and repair the Darwin base")
             .build();
         let actions: [(&str, &str, &str, &'static str, Vec<&'static str>); 5] = [
-            (
-                "Details",
-                "",
-                "Prefix Details",
-                "info",
-                vec![],
-            ),
+            ("Details", "", "Prefix Details", "info", vec![]),
             (
                 "Verify",
                 "Hash every system file against the manifest",

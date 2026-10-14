@@ -3,6 +3,7 @@
 
 pub mod bottle_page;
 pub mod bottles_page;
+pub mod env_dialog;
 pub mod new_bottle;
 pub mod permissions;
 pub mod preferences;

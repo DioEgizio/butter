@@ -8,6 +8,7 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Paths;
+use crate::gpu::Gpu;
 use crate::permissions::{self, Feature};
 use crate::runner::{self, Runner};
 use crate::util;
@@ -98,6 +99,57 @@ choice!(
 );
 
 choice!(
+    /// `ROSEMARY_METAL_PRESENTATION_MODE`
+    PresentMode {
+        Default => ("Default (Mailbox)", None),
+        Immediate => ("Immediate (unlocked)", Some("immediate")),
+        Mailbox => ("Mailbox", Some("mailbox")),
+        Fifo => ("VSync (FIFO)", Some("fifo")),
+        FifoRelaxed => ("Adaptive VSync", Some("fifo_relaxed")),
+    }
+);
+
+choice!(
+    /// Who a bottle's environment variable is set for.
+    EnvTarget {
+        Guest => ("Programs", None),
+        Rosemary => ("Rosemary", None),
+        Both => ("Programs and Rosemary", None),
+    }
+);
+
+impl EnvTarget {
+    pub fn guest(self) -> bool {
+        self != EnvTarget::Rosemary
+    }
+
+    pub fn rosemary(self) -> bool {
+        self != EnvTarget::Guest
+    }
+
+    /// Where a variable named `name` most likely belongs: Rosemary's own
+    /// settings and those of the host libraries it loads are Rosemary's,
+    /// anything else is for the programs.
+    pub fn suggested(name: &str) -> EnvTarget {
+        const HOST: &[&str] = &[
+            "ROSEMARY_",
+            "SDL_",
+            "VK_",
+            "MESA_",
+            "RADV_",
+            "DRI_",
+            "LD_",
+            "RUST_",
+            "__",
+        ];
+        match HOST.iter().any(|p| name.starts_with(p)) {
+            true => EnvTarget::Rosemary,
+            false => EnvTarget::Guest,
+        }
+    }
+}
+
+choice!(
     /// `ROSEMARY_PREFIX_HOME`
     PrefixHome {
         Prefix => ("Isolated (Recommended)", None),
@@ -120,6 +172,42 @@ pub struct Program {
     pub backend: Backend,
 }
 
+/// A variable the user set for a bottle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvVar {
+    pub name: String,
+    /// Unset, the programs get this computer's value of the variable.
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub target: EnvTarget,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+impl EnvVar {
+    /// Why the variable cannot be set as it is, if it cannot.
+    pub fn problem(&self) -> Option<&'static str> {
+        if !valid_env_name(&self.name) {
+            return Some("Names use letters, digits and underscores");
+        }
+        match &self.value {
+            // Rosemary already has this computer's value of everything.
+            None if !self.target.guest() => {
+                Some("Only programs can copy a value from this computer")
+            }
+            // `ROSEMARY_ENVIRON` holds one variable per line.
+            Some(v) if v.contains(['\n', '\0']) => Some("Values cannot hold line breaks"),
+            _ => None,
+        }
+    }
+}
+
+/// A name for `ROSEMARY_FORWARD_ENV_VARS`: a variable, or a prefix and `*`.
+pub fn valid_forward_name(name: &str) -> bool {
+    valid_env_name(name.strip_suffix('*').unwrap_or(name))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub name: String,
@@ -140,6 +228,18 @@ pub struct Config {
     #[serde(default)]
     pub swap_interval: SwapInterval,
     #[serde(default)]
+    pub present_mode: PresentMode,
+    /// The refresh rate programs are told the display has, in hertz; 0
+    /// leaves it to the display.
+    #[serde(default)]
+    pub refresh_rate: u32,
+    /// The card Metal renders on; unset leaves it to Rosemary.
+    #[serde(default)]
+    pub metal_gpu: Option<Gpu>,
+    /// The card OpenGL renders on; unset leaves it to the system.
+    #[serde(default)]
+    pub opengl_gpu: Option<Gpu>,
+    #[serde(default)]
     pub prefix_home: PrefixHome,
     #[serde(default = "yes")]
     pub steam: bool,
@@ -147,6 +247,8 @@ pub struct Config {
     pub menu_ctrl: bool,
     #[serde(default)]
     pub confine_pointer: bool,
+    #[serde(default)]
+    pub plain_ctrl_click: bool,
     /// Hide the Vulkan driver from Rosemary (`VK_DRIVER_FILES=/dev/null`).
     #[serde(default)]
     pub disable_metal: bool,
@@ -158,8 +260,16 @@ pub struct Config {
     pub call_return: bool,
     #[serde(default)]
     pub strict_imports: bool,
+    /// The user's own variables, in the order they were added.
     #[serde(default)]
-    pub env: BTreeMap<String, String>,
+    pub variables: Vec<EnvVar>,
+    /// Variables a program may pass on to the programs it launches.
+    #[serde(default)]
+    pub forward_env: Vec<String>,
+    /// Variables from before Rosemary kept the programs' environment apart
+    /// from its own. Moved to `variables` when the bottle is loaded.
+    #[serde(default, rename = "env", skip_serializing)]
+    legacy_env: BTreeMap<String, String>,
     #[serde(default)]
     pub programs: Vec<Program>,
     /// Desktop file ids of the shortcuts made to this bottle's applications.
@@ -174,6 +284,33 @@ impl Config {
         config.runner = runner;
         config.created = util::now();
         config
+    }
+
+    /// Bring a manifest written by an older Butter up to date.
+    fn upgrade(&mut self) {
+        // These were set for Rosemary, whose programs then saw all of its
+        // environment. Programs see only what they are given now, so give
+        // them what they used to see, except Rosemary's own settings.
+        for (name, value) in std::mem::take(&mut self.legacy_env) {
+            let target = match name.starts_with("ROSEMARY_") {
+                true => EnvTarget::Rosemary,
+                false => EnvTarget::Both,
+            };
+            self.set_variable(EnvVar {
+                name,
+                value: Some(value),
+                target,
+                enabled: true,
+            });
+        }
+    }
+
+    /// Add `var`, in place of any variable of the same name.
+    pub fn set_variable(&mut self, var: EnvVar) {
+        match self.variables.iter_mut().find(|v| v.name == var.name) {
+            Some(existing) => *existing = var,
+            None => self.variables.push(var),
+        }
     }
 }
 
@@ -260,7 +397,8 @@ impl Bottle {
         )
     }
 
-    /// The environment Rosemary is run with for this bottle.
+    /// The environment Rosemary is run with for this bottle. The programs
+    /// it runs get only what `ROSEMARY_ENVIRON` gives them.
     pub fn environment(&self) -> Vec<(String, String)> {
         let c = &self.config;
         let mut env = vec![(
@@ -275,21 +413,71 @@ impl Bottle {
         set("ROSEMARY_DECORATIONS", c.decorations.value());
         set("ROSEMARY_MENU", c.menu.value());
         set("ROSEMARY_SWAP_INTERVAL", c.swap_interval.value());
+        set("ROSEMARY_METAL_PRESENTATION_MODE", c.present_mode.value());
+        let refresh_rate = c.refresh_rate.to_string();
+        set(
+            "ROSEMARY_SCREEN_REFRESH_RATE",
+            (c.refresh_rate > 0).then_some(refresh_rate.as_str()),
+        );
         set("ROSEMARY_PREFIX_HOME", c.prefix_home.value());
         // Without access to Steam's folders the bridge has nothing to load.
         let steam = c.steam && permissions::available(Feature::Steam);
         set("ROSEMARY_STEAM", (!steam).then_some("0"));
         set("ROSEMARY_MENU_CTRL", (!c.menu_ctrl).then_some("0"));
         set("ROSEMARY_CONFINE_POINTER", c.confine_pointer.then_some("1"));
+        set(
+            "ROSEMARY_PLAIN_CTRL_CLICK",
+            c.plain_ctrl_click.then_some("1"),
+        );
         set("VK_DRIVER_FILES", c.disable_metal.then_some("/dev/null"));
-        set("ROSEMARY_SERVER",(!c.process_server).then_some("off"));
+        set("ROSEMARY_SERVER", (!c.process_server).then_some("off"));
         set("ROSEMARY_DEAD_FLAGS", c.dead_flags.then_some("1"));
         set("ROSEMARY_CALL_RETURN", c.call_return.then_some("1"));
         set("ROSEMARY_STRICT_IMPORTS", c.strict_imports.then_some("1"));
+        let forward = c.forward_env.join(",");
+        set(
+            "ROSEMARY_FORWARD_ENV_VARS",
+            (!forward.is_empty()).then_some(forward.as_str()),
+        );
+        // Rosemary loads Vulkan and OpenGL in its own process, so these are
+        // its variables, not the programs'.
+        let gpus = [
+            c.metal_gpu
+                .as_ref()
+                .filter(|_| !c.disable_metal)
+                .map(Gpu::vulkan_env),
+            c.opengl_gpu.as_ref().map(Gpu::opengl_env),
+        ];
+        for (key, value) in gpus.into_iter().flatten().flatten() {
+            set(key, Some(&value));
+        }
+
+        let mut guest = Vec::new();
+        let mut own = Vec::new();
+        for var in c.variables.iter().filter(|v| v.enabled) {
+            if var.problem().is_some() {
+                continue;
+            }
+            if var.target.guest() {
+                // A bare name copies this computer's value.
+                guest.push(match &var.value {
+                    Some(value) => format!("{}={value}", var.name),
+                    None => var.name.clone(),
+                });
+            }
+            if var.target.rosemary()
+                && let Some(value) = &var.value
+            {
+                own.push((var.name.clone(), value.clone()));
+            }
+        }
+        if !guest.is_empty() {
+            env.push(("ROSEMARY_ENVIRON".to_string(), guest.join("\n")));
+        }
         // The user's own variables win over everything above.
-        for (key, value) in &c.env {
-            env.retain(|(k, _)| k != key);
-            env.push((key.clone(), value.clone()));
+        for (key, value) in own {
+            env.retain(|(k, _)| *k != key);
+            env.push((key, value));
         }
         env
     }
@@ -378,9 +566,10 @@ pub fn list() -> Vec<Bottle> {
 
 fn load_dir(dir: &Path) -> Option<Bottle> {
     let text = std::fs::read_to_string(dir.join(MANIFEST)).ok()?;
-    let config = toml::from_str(&text)
+    let mut config: Config = toml::from_str(&text)
         .map_err(|e| eprintln!("butter: skipping {}: {e}", dir.join(MANIFEST).display()))
         .ok()?;
+    config.upgrade();
     Some(Bottle {
         id: dir.file_name()?.to_string_lossy().into_owned(),
         dir: dir.to_path_buf(),
@@ -500,15 +689,80 @@ mod tests {
         config.swap_interval = SwapInterval::Adaptive;
         config.dead_flags = true;
         config.disable_metal = true;
-        config.env.insert("ROSEMARY_STEAM".into(), "1".into());
-        config.env.insert("FOO".into(), "bar".into());
+        config.present_mode = PresentMode::FifoRelaxed;
+        config.refresh_rate = 144;
+        config.plain_ctrl_click = true;
+        config.forward_env = vec!["ROSEMARY_STATS".into(), "MY_*".into()];
+        let var = |name: &str, value: Option<&str>, target| EnvVar {
+            name: name.into(),
+            value: value.map(str::to_string),
+            target,
+            enabled: true,
+        };
+        config.set_variable(var("ROSEMARY_STEAM", Some("1"), EnvTarget::Rosemary));
+        config.set_variable(var("FOO", Some("bar"), EnvTarget::Guest));
+        config.set_variable(var("DISPLAY", None, EnvTarget::Guest));
+        config.set_variable(var("BOTH", Some("x"), EnvTarget::Both));
+        config.set_variable(EnvVar {
+            enabled: false,
+            ..var("OFF", Some("1"), EnvTarget::Both)
+        });
+        // Rosemary already has the host's value of everything.
+        config.set_variable(var("NOPE", None, EnvTarget::Rosemary));
         let env: BTreeMap<_, _> = bottle(config).environment().into_iter().collect();
         assert_eq!(env["ROSEMARY_DECORATIONS"], "server");
         assert_eq!(env["ROSEMARY_SWAP_INTERVAL"], "-1");
+        assert_eq!(env["ROSEMARY_METAL_PRESENTATION_MODE"], "fifo_relaxed");
+        assert_eq!(env["ROSEMARY_SCREEN_REFRESH_RATE"], "144");
+        assert_eq!(env["ROSEMARY_PLAIN_CTRL_CLICK"], "1");
+        assert_eq!(env["ROSEMARY_FORWARD_ENV_VARS"], "ROSEMARY_STATS,MY_*");
         assert_eq!(env["ROSEMARY_DEAD_FLAGS"], "1");
         assert_eq!(env["VK_DRIVER_FILES"], "/dev/null");
         assert_eq!(env["ROSEMARY_STEAM"], "1", "user variables win");
+        assert_eq!(env["ROSEMARY_ENVIRON"], "FOO=bar\nDISPLAY\nBOTH=x");
+        assert_eq!(env["BOTH"], "x");
+        assert!(!env.contains_key("FOO") && !env.contains_key("OFF"));
+        assert!(!env.contains_key("NOPE"));
+    }
+
+    #[test]
+    fn gpus_are_rosemarys() {
+        let gpu = Gpu {
+            slot: "0000:03:00.0".into(),
+            vendor: 0x1002,
+            device: 0x73bf,
+            driver: "amdgpu".into(),
+            name: "AMD Radeon RX 6800".into(),
+        };
+        let mut config = Config::new("x", None);
+        config.metal_gpu = Some(gpu.clone());
+        config.opengl_gpu = Some(gpu);
+        let text = toml::to_string_pretty(&config).unwrap();
+        let config: Config = toml::from_str(&text).unwrap();
+        let env: BTreeMap<_, _> = bottle(config.clone()).environment().into_iter().collect();
+        assert_eq!(env["MESA_VK_DEVICE_SELECT"], "1002:73bf");
+        assert_eq!(env["DRI_PRIME"], "pci-0000_03_00_0");
+
+        let mut config = config;
+        config.disable_metal = true;
+        let env: BTreeMap<_, _> = bottle(config).environment().into_iter().collect();
+        assert!(!env.contains_key("MESA_VK_DEVICE_SELECT"));
+        assert!(env.contains_key("DRI_PRIME"));
+    }
+
+    #[test]
+    fn old_variables_are_upgraded() {
+        let mut config: Config =
+            toml::from_str("name = \"x\"\n[env]\nROSEMARY_OBJC = \"builtin\"\nFOO = \"bar\"\n")
+                .unwrap();
+        config.upgrade();
+        assert_eq!(config.variables.len(), 2);
+        let env: BTreeMap<_, _> = bottle(config.clone()).environment().into_iter().collect();
+        assert_eq!(env["ROSEMARY_OBJC"], "builtin");
         assert_eq!(env["FOO"], "bar");
+        assert_eq!(env["ROSEMARY_ENVIRON"], "FOO=bar");
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert!(!text.contains("[env]"), "{text}");
     }
 
     #[test]
@@ -532,6 +786,10 @@ mod tests {
         assert!(valid_env_name("ROSEMARY_OBJC"));
         assert!(!valid_env_name("1X"));
         assert!(!valid_env_name("A-B"));
+        assert!(valid_forward_name("ROSEMARY_*"));
+        assert!(!valid_forward_name("*"));
+        assert_eq!(EnvTarget::suggested("ROSEMARY_OBJC"), EnvTarget::Rosemary);
+        assert_eq!(EnvTarget::suggested("MY_GAME_FLAG"), EnvTarget::Guest);
         assert_eq!(program_name(Path::new("/x/Foo Bar.app")), "Foo Bar");
         assert_eq!(program_name(Path::new("/x/tool")), "tool");
     }

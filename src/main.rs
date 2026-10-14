@@ -2,6 +2,7 @@ mod apps;
 mod bottle;
 mod config;
 mod github;
+mod gpu;
 mod markdown;
 mod permissions;
 mod process;
