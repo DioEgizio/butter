@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- GTK looks themed icons up under <prefix>/<size>/<context>/<name>.svg
+       for each resource path added to the icon theme; see src/icons.rs. -->
+  <gresource prefix="/io/github/microlift/Butter/icons">
+    <file>scalable/ui/application-x-executable-symbolic.svg</file>
+    <file>scalable/ui/application-x-executable.svg</file>
+    <file>scalable/ui/applications-games-symbolic.svg</file>
+    <file>scalable/ui/channel-secure-symbolic.svg</file>
+    <file>scalable/ui/dialog-information-symbolic.svg</file>
+    <file>scalable/ui/dialog-warning-symbolic.svg</file>
+    <file>scalable/ui/edit-clear-all-symbolic.svg</file>
+    <file>scalable/ui/edit-copy-symbolic.svg</file>
+    <file>scalable/ui/emblem-default-symbolic.svg</file>
+    <file>scalable/ui/emblem-ok-symbolic.svg</file>
+    <file>scalable/ui/emblem-system-symbolic.svg</file>
+    <file>scalable/ui/folder-open-symbolic.svg</file>
+    <file>scalable/ui/go-next-symbolic.svg</file>
+    <file>scalable/ui/list-add-symbolic.svg</file>
+    <file>scalable/ui/mail-send-symbolic.svg</file>
+    <file>scalable/ui/media-playback-start-symbolic.svg</file>
+    <file>scalable/ui/media-playback-stop-symbolic.svg</file>
+    <file>scalable/ui/object-select-symbolic.svg</file>
+    <file>scalable/ui/open-menu-symbolic.svg</file>
+    <file>scalable/ui/package-x-generic-symbolic.svg</file>
+    <file>scalable/ui/system-run-symbolic.svg</file>
+    <file>scalable/ui/system-shutdown-symbolic.svg</file>
+    <file>scalable/ui/user-trash-symbolic.svg</file>
+    <file>scalable/ui/utilities-terminal-symbolic.svg</file>
+    <file>scalable/ui/video-display-symbolic.svg</file>
+    <file>scalable/ui/view-app-grid-symbolic.svg</file>
+    <file>scalable/ui/view-more-symbolic.svg</file>
+    <file>scalable/ui/view-refresh-symbolic.svg</file>
+    <file>scalable/ui/window-close-symbolic.svg</file>
+  </gresource>
+</gresources>

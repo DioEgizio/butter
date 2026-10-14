@@ -48,7 +48,7 @@
           # the desktop file, metainfo and icons are needed to install.
           src = lib.cleanSourceWith {
             src = ./.;
-            filter = path: type: (craneLib.filterCargoSources path type) || (lib.hasInfix "/data/" path);
+            filter = path: type: (craneLib.filterCargoSources path type) || (lib.hasInfix "/data/" path) || (baseNameOf path == "build.rs");
           };
 
           commonArgs = {
@@ -57,6 +57,7 @@
 
             nativeBuildInputs = with pkgs; [
               pkg-config
+              glib.dev # glib-compile-resources, for the bundled icons
               wrapGAppsHook4
               desktop-file-utils
               appstream

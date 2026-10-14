@@ -3,6 +3,7 @@ mod bottle;
 mod config;
 mod github;
 mod gpu;
+mod icons;
 mod markdown;
 mod permissions;
 mod process;
@@ -36,6 +37,7 @@ fn main() -> glib::ExitCode {
         .build();
 
     app.connect_startup(|app| {
+        icons::init();
         gtk::Window::set_default_icon_name(config::APP_ID);
         let about = gio::ActionEntry::builder("about")
             .activate(|app: &adw::Application, _, _| show_about(app))
