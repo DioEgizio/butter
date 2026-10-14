@@ -5,24 +5,53 @@ use std::path::Path;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 
+use crate::apps::{self, App};
 use crate::bottle::{
     self, Backend, Bottle, Decorations, Menu, PrefixHome, Program, SwapInterval, SystemFiles,
 };
 use crate::permissions::{self, Feature};
 use crate::runner;
-use crate::sessions::Status;
+use crate::shortcuts;
 use crate::ui::{self, new_bottle, process_manager, program_dialog, task, window::Window};
 
 #[derive(Clone)]
 pub struct BottlePage(Rc<Inner>);
+
+/// A row of the Applications list.
+#[derive(Clone)]
+struct Entry {
+    program: Program,
+    /// Its index among the programs added by hand, if it is one.
+    added: Option<usize>,
+    /// What the bundle says about itself, for a bundle.
+    app: Option<App>,
+}
+
+/// An application's icon for a list row.
+fn app_icon(app: Option<&App>) -> gtk::Image {
+    let texture = app
+        .and_then(|a| a.icon_png.as_deref())
+        .and_then(|path| gtk::gdk::Texture::from_filename(path).ok());
+    let image = match texture {
+        Some(texture) => gtk::Image::from_paintable(Some(&texture)),
+        None => gtk::Image::from_icon_name("application-x-executable"),
+    };
+    image.set_pixel_size(32);
+    image
+}
 
 struct Inner {
     page: adw::NavigationPage,
     window: Window,
     bottle: RefCell<Bottle>,
     programs: gtk::ListBox,
+    /// Bundles found in the bottle, and those added by hand.
+    apps: RefCell<Vec<App>>,
+    /// Watch the folders applications are installed in.
+    monitors: RefCell<Vec<gio::FileMonitor>>,
+    rescan_due: Cell<bool>,
     env: gtk::ListBox,
     banner: adw::Banner,
     /// A runner change asked for while programs were running, applied once
@@ -56,6 +85,9 @@ impl BottlePage {
             window: window.clone(),
             bottle: RefCell::new(bottle),
             programs,
+            apps: RefCell::default(),
+            monitors: RefCell::default(),
+            rescan_due: Cell::new(false),
             env,
             banner,
             pending_runner: RefCell::new(None),
@@ -96,6 +128,8 @@ impl BottlePage {
             glib::spawn_future_local(async move {
                 new_bottle::create_prefix(this.window(), &this.bottle(), true).await;
                 this.refresh_banner();
+                this.watch_applications();
+                this.rescan();
             });
         });
 
@@ -107,6 +141,8 @@ impl BottlePage {
         content.add(&this.prefix_group());
         content.add(&this.danger_group());
         this.refresh_programs();
+        this.watch_applications();
+        this.rescan();
         this.refresh_environment();
         this.refresh_banner();
         this
@@ -174,54 +210,25 @@ impl BottlePage {
 
     /// Start `target` in this bottle and report how it ends.
     fn launch(&self, target: &Path, args: &[String], backend: Backend, name: &str) {
-        let bottle = self.bottle();
-        let window = self.window().clone();
-        let on_end = {
-            let window = window.clone();
-            let bottle = bottle.clone();
-            move |session: &crate::sessions::Session| {
-                let status = session.status();
-                if matches!(&status, Status::Exited(s) if s.success()) {
-                    return;
-                }
-                let toast = adw::Toast::builder()
-                    .title(glib::markup_escape_text(&format!(
-                        "{}: {}",
-                        session.name,
-                        status.describe()
-                    )))
-                    .button_label("Show Output")
-                    .timeout(10)
-                    .build();
-                let (window2, id) = (window.clone(), session.id);
-                toast.connect_button_clicked(move |_| {
-                    window2.show_processes(&bottle, Some(id));
-                });
-                window.toast(toast);
-            }
-        };
-        match window
-            .sessions()
-            .launch(&bottle, target, args, backend, name, on_end)
-        {
-            Ok(session) => {
-                let toast = adw::Toast::builder()
-                    .title(glib::markup_escape_text(&format!("Starting {name}…")))
-                    .button_label("Show")
-                    .build();
-                let (window2, id) = (window.clone(), session.id);
-                toast.connect_button_clicked(move |_| {
-                    window2.show_processes(&bottle, Some(id));
-                });
-                window.toast(toast);
-            }
-            Err(e) => window.error(format!("Could not start {name}: {e:#}")),
-        }
+        self.window()
+            .launch(&self.bottle(), target, args, backend, name);
     }
 
     fn programs_group(&self) -> adw::PreferencesGroup {
-        let group = adw::PreferencesGroup::builder().title("Programs").build();
-        let add = ui::icon_button("list-add-symbolic", "Add Program…");
+        let group = adw::PreferencesGroup::builder()
+            .title("Applications")
+            .description(
+                "Apps installed in the bottle's Applications folder appear here by themselves",
+            )
+            .build();
+        let rescan = ui::icon_button("view-refresh-symbolic", "Look for Applications Again");
+        let weak = self.weak();
+        rescan.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                BottlePage(inner).rescan();
+            }
+        });
+        let add = ui::icon_button("list-add-symbolic", "Add Application…");
         let weak = self.weak();
         add.connect_clicked(move |_| {
             let Some(inner) = weak.upgrade() else { return };
@@ -229,45 +236,184 @@ impl BottlePage {
             let page = this.clone();
             program_dialog::present(this.window(), None, move |program| {
                 page.edit(|c| c.programs.push(program));
-                page.refresh_programs();
+                page.rescan();
                 page.window().refresh();
             });
         });
-        group.set_header_suffix(Some(&add));
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        buttons.append(&rescan);
+        buttons.append(&add);
+        group.set_header_suffix(Some(&buttons));
         group.add(&self.0.programs);
         group
+    }
+
+    /// Follow the folders applications are installed in, so new ones show
+    /// up without a refresh.
+    fn watch_applications(&self) {
+        let mut monitors = Vec::new();
+        for dir in self.bottle().application_dirs() {
+            let Ok(monitor) = gio::File::for_path(&dir)
+                .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+            else {
+                continue;
+            };
+            let weak = self.weak();
+            monitor.connect_changed(move |_, _, _, _| {
+                let Some(inner) = weak.upgrade() else { return };
+                // An install writes many files; look once it has settled.
+                if inner.rescan_due.replace(true) {
+                    return;
+                }
+                let weak = Rc::downgrade(&inner);
+                glib::timeout_add_seconds_local_once(1, move || {
+                    if let Some(inner) = weak.upgrade() {
+                        inner.rescan_due.set(false);
+                        BottlePage(inner).rescan();
+                    }
+                });
+            });
+            monitors.push(monitor);
+        }
+        *self.0.monitors.borrow_mut() = monitors;
+    }
+
+    /// Read the bottle's applications, and the bundles added by hand, in the
+    /// background, then show them.
+    fn rescan(&self) {
+        let bottle = self.bottle();
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            let found = crate::process::background(move || {
+                let mut found: Vec<App> = bottle
+                    .application_dirs()
+                    .iter()
+                    .flat_map(|dir| apps::scan(dir))
+                    .collect();
+                for program in &bottle.config.programs {
+                    if apps::is_bundle(&program.path)
+                        && !found.iter().any(|a| a.path == program.path)
+                    {
+                        found.push(apps::read(&program.path));
+                    }
+                }
+                for app in &mut found {
+                    app.icon_png = app.render_icon();
+                }
+                found
+            })
+            .await;
+            if let Some(inner) = weak.upgrade() {
+                *inner.apps.borrow_mut() = found;
+                BottlePage(inner).refresh_programs();
+            }
+        });
+    }
+
+    /// The rows: applications found in the bottle and programs added by
+    /// hand, by name. An added program stands in for the app at its path.
+    fn entries(&self) -> Vec<Entry> {
+        let bottle = self.bottle();
+        let apps = self.0.apps.borrow();
+        let mut entries: Vec<Entry> = bottle
+            .config
+            .programs
+            .iter()
+            .enumerate()
+            .map(|(index, program)| Entry {
+                program: program.clone(),
+                added: Some(index),
+                app: apps.iter().find(|a| a.path == program.path).cloned(),
+            })
+            .collect();
+        for app in apps.iter().filter(|a| a.installed) {
+            if !entries.iter().any(|e| e.program.path == app.path) {
+                entries.push(Entry {
+                    program: Program {
+                        name: app.name.clone(),
+                        path: app.path.clone(),
+                        args: Vec::new(),
+                        backend: Backend::Auto,
+                    },
+                    added: None,
+                    app: Some(app.clone()),
+                });
+            }
+        }
+        entries.sort_by_key(|e| e.program.name.to_lowercase());
+        entries
     }
 
     fn refresh_programs(&self) {
         let list = &self.0.programs;
         list.remove_all();
-        let programs = self.bottle().config.programs;
-        if programs.is_empty() {
+        let entries = self.entries();
+        if entries.is_empty() {
             list.append(&ui::placeholder_row(
-                "Add a program to run it with one click",
+                "Install an app into the bottle, or add one to run it with one click",
             ));
         }
-        for (index, program) in programs.into_iter().enumerate() {
+        let bottle = self.bottle();
+        let drive = bottle.drive();
+        for entry in entries {
+            let program = &entry.program;
+            // Inside the bottle, where the app sees itself.
+            let location = match program.path.strip_prefix(&drive) {
+                Ok(rest) => Path::new("/").join(rest).display().to_string(),
+                Err(_) => program.path.display().to_string(),
+            };
+            let subtitle = match entry.app.as_ref().and_then(|a| a.version.as_deref()) {
+                Some(version) => format!("{location} · {version}"),
+                None => location,
+            };
             let row = adw::ActionRow::builder()
                 .title(glib::markup_escape_text(&program.name))
-                .subtitle(glib::markup_escape_text(
-                    &program.path.display().to_string(),
-                ))
+                .subtitle(glib::markup_escape_text(&subtitle))
                 .subtitle_lines(1)
                 .build();
+            row.add_prefix(&app_icon(entry.app.as_ref()));
             if !program.path.exists() {
                 let warning = gtk::Image::from_icon_name("dialog-warning-symbolic");
                 warning.set_tooltip_text(Some("Not found"));
                 warning.add_css_class("warning");
                 row.add_suffix(&warning);
             }
+            let shortcut = shortcuts::desktop_id(&bottle.id, &program.path);
+            let has_shortcut = bottle.config.shortcuts.contains(&shortcut);
+            if has_shortcut {
+                let pinned = gtk::Image::from_icon_name("view-app-grid-symbolic");
+                pinned.set_tooltip_text(Some("In the applications menu"));
+                pinned.add_css_class("dim-label");
+                row.add_suffix(&pinned);
+            }
             let run = ui::icon_button("media-playback-start-symbolic", "Run");
-            let edit = ui::icon_button("document-edit-symbolic", "Edit");
-            let remove = ui::icon_button("user-trash-symbolic", "Remove");
             row.add_suffix(&run);
-            row.add_suffix(&edit);
-            row.add_suffix(&remove);
             row.set_activatable_widget(Some(&run));
+
+            let menu = gio::Menu::new();
+            if entry.app.is_some() {
+                if has_shortcut {
+                    menu.append(Some("Remove _Shortcut"), Some("app-row.remove-shortcut"));
+                } else {
+                    menu.append(Some("Create _Shortcut…"), Some("app-row.create-shortcut"));
+                }
+            }
+            if entry.added.is_some() {
+                menu.append(Some("_Edit…"), Some("app-row.edit"));
+                menu.append(Some("_Remove"), Some("app-row.remove"));
+            } else {
+                menu.append(Some("_Customize…"), Some("app-row.edit"));
+            }
+            row.add_suffix(
+                &gtk::MenuButton::builder()
+                    .icon_name("view-more-symbolic")
+                    .tooltip_text("More")
+                    .menu_model(&menu)
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build(),
+            );
+            row.insert_action_group("app-row", Some(&self.row_actions(&entry, shortcut)));
 
             let weak = self.weak();
             let p = program.clone();
@@ -276,37 +422,122 @@ impl BottlePage {
                     BottlePage(inner).launch(&p.path, &p.args, p.backend, &p.name);
                 }
             });
+            list.append(&row);
+        }
+    }
+
+    fn row_actions(&self, entry: &Entry, shortcut: String) -> gio::SimpleActionGroup {
+        let group = gio::SimpleActionGroup::new();
+        let add = |name: &str, activate: Box<dyn Fn(BottlePage)>| {
+            let action = gio::SimpleAction::new(name, None);
             let weak = self.weak();
-            edit.connect_clicked(move |_| {
-                let Some(inner) = weak.upgrade() else { return };
-                let this = BottlePage(inner);
-                let page = this.clone();
-                program_dialog::present(
-                    this.window(),
-                    Some(program.clone()),
-                    move |changed: Program| {
-                        page.edit(|c| {
-                            if let Some(slot) = c.programs.get_mut(index) {
-                                *slot = changed;
-                            }
-                        });
-                        page.refresh_programs();
-                    },
-                );
+            action.connect_activate(move |_, _| {
+                if let Some(inner) = weak.upgrade() {
+                    activate(BottlePage(inner));
+                }
             });
-            let weak = self.weak();
-            remove.connect_clicked(move |_| {
-                let Some(inner) = weak.upgrade() else { return };
-                let this = BottlePage(inner);
+            group.add_action(&action);
+        };
+
+        let e = entry.clone();
+        add(
+            "create-shortcut",
+            Box::new(move |this| {
+                let e = e.clone();
+                glib::spawn_future_local(async move { this.create_shortcut(&e).await });
+            }),
+        );
+        let id = shortcut.clone();
+        add(
+            "remove-shortcut",
+            Box::new(move |this| {
+                let id = id.clone();
+                glib::spawn_future_local(async move { this.remove_shortcut(&id).await });
+            }),
+        );
+        let e = entry.clone();
+        add(
+            "edit",
+            Box::new(move |this| {
+                let page = this.clone();
+                let index = e.added;
+                program_dialog::present(this.window(), Some(e.program.clone()), move |changed| {
+                    page.edit(|c| match index.and_then(|i| c.programs.get_mut(i)) {
+                        Some(slot) => *slot = changed,
+                        None => c.programs.push(changed),
+                    });
+                    page.rescan();
+                    page.window().refresh();
+                });
+            }),
+        );
+        let e = entry.clone();
+        add(
+            "remove",
+            Box::new(move |this| {
+                let Some(index) = e.added else { return };
                 this.edit(|c| {
                     if index < c.programs.len() {
                         c.programs.remove(index);
                     }
                 });
-                this.refresh_programs();
+                // Its row goes, and with it the only way to remove the
+                // shortcut, unless the app is installed in the bottle.
+                let installed = e.app.as_ref().is_some_and(|a| a.installed);
+                if !installed && this.bottle().config.shortcuts.contains(&shortcut) {
+                    let (this, id) = (this.clone(), shortcut.clone());
+                    glib::spawn_future_local(async move { this.remove_shortcut(&id).await });
+                }
+                this.rescan();
                 this.window().refresh();
-            });
-            list.append(&row);
+            }),
+        );
+        group
+    }
+
+    /// Ask the desktop to add `entry` to its applications menu.
+    async fn create_shortcut(&self, entry: &Entry) {
+        let Some(app) = entry.app.clone() else { return };
+        let bottle = self.bottle();
+        let shortcut = shortcuts::Shortcut {
+            bottle: bottle.id.clone(),
+            bottle_name: bottle.config.name.clone(),
+            name: entry.program.name.clone(),
+            target: entry.program.path.clone(),
+            args: entry.program.args.clone(),
+            backend: entry.program.backend,
+            icon: app.icon_png.clone(),
+            app,
+        };
+        match shortcuts::install(&shortcut).await {
+            Ok(Some(name)) => {
+                let id = shortcut.id();
+                self.edit(|c| {
+                    if !c.shortcuts.contains(&id) {
+                        c.shortcuts.push(id);
+                    }
+                });
+                self.refresh_programs();
+                self.window()
+                    .notify(&format!("Added {name} to the applications menu"));
+            }
+            Ok(None) => {}
+            Err(e) => self
+                .window()
+                .error(format!("Could not create the shortcut: {e:#}")),
+        }
+    }
+
+    async fn remove_shortcut(&self, id: &str) {
+        let result = shortcuts::uninstall(id).await;
+        // Forgotten either way: a shortcut the desktop no longer has is gone.
+        self.edit(|c| c.shortcuts.retain(|s| s != id));
+        self.refresh_programs();
+        match result {
+            Ok(()) => self.window().notify("Shortcut removed"),
+            Err(e) => self
+                .window()
+                .error(format!("Could not remove the shortcut: {e:#}")),
         }
     }
 
@@ -875,6 +1106,12 @@ impl BottlePage {
                 .await
                 {
                     return;
+                }
+                // Its shortcuts would run a bottle that is gone.
+                for id in &bottle.config.shortcuts {
+                    if let Err(e) = shortcuts::uninstall(id).await {
+                        eprintln!("butter: could not remove the shortcut {id}: {e:#}");
+                    }
                 }
                 let result = crate::process::background(move || bottle::delete(&bottle)).await;
                 match result {

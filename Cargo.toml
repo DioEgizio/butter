@@ -23,6 +23,7 @@ libc = "0.2.190"
 vte4 = "0.10"
 sha2 = "0.10"
 pulldown-cmark = { version = "0.13", default-features = false }
+plist = { version = "1", default-features = false }
 
 [profile.release]
 lto = "thin"

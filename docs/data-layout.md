@@ -6,6 +6,8 @@
 | Bottles | `$XDG_DATA_HOME/butter/bottles/<id>/` (`bottle.toml`, `prefix/`, `logs/`, and `run/` while programs run) |
 | Butter's Rust toolchain | `$XDG_DATA_HOME/butter/toolchain/` |
 | Build cache and release list | `$XDG_CACHE_HOME/butter/` |
+| Application icons, converted to PNG | `$XDG_CACHE_HOME/butter/icons/` |
+| Shortcuts | Installed by the Dynamic Launcher portal, as `io.github.microlift.butter.<bottle>.app_<hash>.desktop`. Without the portal (outside the Flatpak only), in `$XDG_DATA_HOME/applications/`, with icons in `$XDG_DATA_HOME/butter/shortcuts/` |
 | Preferences | `$XDG_CONFIG_HOME/butter/settings.toml` |
 | Onboarding answers (Flatpak) | `$XDG_CONFIG_HOME/butter/permissions.toml` |
 

@@ -34,6 +34,11 @@ Some optional features need more. When Butter first starts, it asks which
 ones you want, then shows the commented `flatpak override` command that
 allows exactly what they need. Run it in a terminal and restart Butter.
 
+Shortcuts are made through the Dynamic Launcher portal, which needs no
+extra permission. A shortcut can only open the files Butter can reach, so to
+open documents from your file manager with a bottle's application, let
+Butter see the folders they are in, as above.
+
 Butter reads what the sandbox allows from `/.flatpak-info` at each launch:
 
 - If you chose a feature but the command never ran, Butter reminds you.

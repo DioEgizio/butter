@@ -32,6 +32,56 @@ The power button in the header stops the whole bottle:
 - **Force Stop** sends SIGKILL to every process Butter started in the bottle,
   and to everything those processes started.
 
+## How applications are found
+
+A bottle's page lists the `.app` bundles in its `/Applications`, in the
+folders inside it (such as `/Applications/Utilities`), and in each user's
+`~/Applications`. Butter watches those folders, so an app an installer puts
+there appears on its own. Programs added by hand are listed with them; adding
+or customizing an installed app keeps its own arguments and backend.
+
+For each bundle, Butter reads `Contents/Info.plist`, in XML or binary form:
+
+- The name is `CFBundleDisplayName`, then `CFBundleName`, then the folder's.
+- The icon is the `.icns` file `CFBundleIconFile` (or `CFBundleIconName`)
+  names in `Contents/Resources`. Butter takes its largest image up to
+  512 pixels, PNG or the older run-length encoded kind, and caches it as a
+  PNG.
+- The links it opens are the schemes in `CFBundleURLTypes`.
+- The files it opens are its `CFBundleDocumentTypes`. Their MIME types come
+  from `CFBundleTypeMIMETypes`, from the types the app declares itself
+  (`UTExportedTypeDeclarations` and `UTImportedTypeDeclarations`), from
+  Apple's common types, and from `CFBundleTypeExtensions` through the shared
+  MIME database. Abstract types, such as `public.data`, are left out, and so
+  are types the app only knows of (role `None`).
+
+## How shortcuts work
+
+**Create Shortcut** asks the desktop, through the
+[Dynamic Launcher portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.DynamicLauncher.html),
+to add the application to its applications menu. The desktop shows a dialog
+where you confirm it, and can rename it. The desktop entry:
+
+- runs `butter --run <bottle> [--backend B] [--arg A]... <app> %U`;
+- lists the app's types and `x-scheme-handler/<scheme>` for its schemes in
+  `MimeType=`, so the desktop offers it for those files and links;
+- gets a category from `LSApplicationCategoryType`, such as Game.
+
+`butter --run` starts the app the way its Run button does, so it shows up in
+the Process Manager. If Butter is open, the open Butter starts it. If not,
+Butter starts it without opening a window, and quits once it ends. A window
+only opens if something went wrong.
+
+The links and files the desktop passes are given to the app as URLs, which
+Rosemary hands to `-[NSApplicationDelegate application:openURLs:]`. Links
+are passed unchanged. A file inside the bottle becomes a `file:` URL of its
+path there, and any other file one under `/Volumes/Host`, where the bottle
+sees the host's files.
+
+Shortcuts are removed from an application's menu, and all of a bottle's are
+removed when it is deleted. Outside the Flatpak, if the portal is missing,
+Butter writes the desktop entry into `~/.local/share/applications` itself.
+
 ## How an official build is installed
 
 Each Rosemary release attaches a Steam compatibility tool,

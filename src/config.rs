@@ -78,6 +78,17 @@ impl Paths {
         self.cache.join("commits-v1.json")
     }
 
+    /// Application icons, converted from `.icns` to PNG.
+    pub fn icons(&self) -> PathBuf {
+        self.cache.join("icons")
+    }
+
+    /// Shortcuts Butter wrote itself, where the Dynamic Launcher portal is
+    /// missing.
+    pub fn shortcut_icons(&self) -> PathBuf {
+        self.data.join("shortcuts")
+    }
+
     pub fn settings_file(&self) -> PathBuf {
         self.config.join("settings.toml")
     }

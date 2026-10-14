@@ -133,7 +133,11 @@ pub fn present(window: &Window, existing: Option<Program>, on_save: impl Fn(Prog
             glib::spawn_future_local(async move {
                 if let Some(chosen) = choose_target(&window, bundle).await {
                     if name.text().trim().is_empty() {
-                        name.set_text(&bottle::program_name(&chosen));
+                        name.set_text(&if crate::apps::is_bundle(&chosen) {
+                            crate::apps::read(&chosen).name
+                        } else {
+                            bottle::program_name(&chosen)
+                        });
                     }
                     location.set_subtitle(&glib::markup_escape_text(&chosen.display().to_string()));
                     *path.borrow_mut() = Some(chosen);

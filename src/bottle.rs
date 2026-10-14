@@ -162,6 +162,9 @@ pub struct Config {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub programs: Vec<Program>,
+    /// Desktop file ids of the shortcuts made to this bottle's applications.
+    #[serde(default)]
+    pub shortcuts: Vec<String>,
 }
 
 impl Config {
@@ -190,6 +193,23 @@ impl Bottle {
     /// The guest's `/`.
     pub fn drive(&self) -> PathBuf {
         self.prefix().join("root")
+    }
+
+    /// Where applications are installed in the guest: `/Applications`, and
+    /// each user's `~/Applications`.
+    pub fn application_dirs(&self) -> Vec<PathBuf> {
+        let drive = self.drive();
+        let mut dirs = vec![drive.join("Applications")];
+        if let Ok(users) = std::fs::read_dir(drive.join("Users")) {
+            let mut homes: Vec<PathBuf> = users
+                .flatten()
+                .map(|e| e.path().join("Applications"))
+                .filter(|p| p.is_dir())
+                .collect();
+            homes.sort();
+            dirs.extend(homes);
+        }
+        dirs
     }
 
     pub fn logs(&self) -> PathBuf {

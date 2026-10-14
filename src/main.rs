@@ -1,3 +1,4 @@
+mod apps;
 mod bottle;
 mod config;
 mod github;
@@ -8,6 +9,7 @@ mod procs;
 mod runner;
 mod sessions;
 mod settings;
+mod shortcuts;
 mod supervisor;
 mod toolchain;
 mod ui;
@@ -28,6 +30,8 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(config::APP_ID)
         .resource_base_path("/io/github/microlift/Butter")
+        // Shortcuts run `butter --run …`, which a running Butter handles.
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
 
     app.connect_startup(|app| {
@@ -46,13 +50,36 @@ fn main() -> glib::ExitCode {
     });
 
     app.connect_activate(|app| {
-        if let Some(window) = app.active_window() {
+        if let Some(window) = ui::window::Window::current() {
             window.present();
             return;
         }
         let window = ui::window::Window::new(app);
         window.present();
         ui::permissions::review(&window);
+    });
+
+    app.connect_command_line(|app, command_line| {
+        let args: Vec<String> = command_line
+            .arguments()
+            .iter()
+            .skip(1)
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        match shortcuts::Launch::parse(&args) {
+            Ok(Some(launch)) => {
+                // Made, but not shown, when Butter was not already open.
+                let window =
+                    ui::window::Window::current().unwrap_or_else(|| ui::window::Window::new(app));
+                window.run_shortcut(&launch);
+            }
+            Ok(None) => app.activate(),
+            Err(e) => {
+                eprintln!("butter: {e}");
+                return glib::ExitCode::FAILURE;
+            }
+        }
+        glib::ExitCode::SUCCESS
     });
 
     app.run()

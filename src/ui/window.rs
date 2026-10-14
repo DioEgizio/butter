@@ -8,10 +8,11 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::bottle::Bottle;
+use crate::bottle::{self, Backend, Bottle};
 use crate::config;
-use crate::sessions::Sessions;
+use crate::sessions::{Session, Sessions, Status};
 use crate::settings::Settings;
+use crate::shortcuts::Launch;
 use crate::ui::bottle_page::BottlePage;
 use crate::ui::bottles_page::BottlesPage;
 use crate::ui::process_manager::{self, ProcessManager};
@@ -19,6 +20,11 @@ use crate::ui::runners_page::RunnersPage;
 
 #[derive(Clone)]
 pub struct Window(Rc<Inner>);
+
+thread_local! {
+    /// Butter's one main window, once made.
+    static CURRENT: RefCell<Option<Window>> = const { RefCell::new(None) };
+}
 
 pub struct Inner {
     window: adw::ApplicationWindow,
@@ -150,7 +156,111 @@ impl Window {
 
         this.setup_actions();
         this.refresh();
+        CURRENT.with(|current| *current.borrow_mut() = Some(this.clone()));
+        this.0.window.connect_destroy(|_| {
+            CURRENT.with(|current| current.borrow_mut().take());
+        });
         this
+    }
+
+    /// The main window, if it has been made.
+    pub fn current() -> Option<Window> {
+        CURRENT.with(|current| current.borrow().clone())
+    }
+
+    /// Run what a shortcut asked for. A window that was never shown stays
+    /// hidden unless something goes wrong, and closes once the programs it
+    /// started have all ended.
+    pub fn run_shortcut(&self, launch: &Launch) {
+        let Some(bottle) = bottle::load(&launch.bottle) else {
+            self.present();
+            self.error(format!("There is no bottle named {}", launch.bottle));
+            return;
+        };
+        let name = bottle
+            .config
+            .programs
+            .iter()
+            .find(|p| p.path == launch.target)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| {
+                if crate::apps::is_bundle(&launch.target) {
+                    crate::apps::read(&launch.target).name
+                } else {
+                    bottle::program_name(&launch.target)
+                }
+            });
+        let args = launch.arguments(&bottle);
+        self.launch(&bottle, &launch.target, &args, launch.backend, &name);
+    }
+
+    /// Start `target` in `bottle` and report how it ends.
+    pub fn launch(
+        &self,
+        bottle: &Bottle,
+        target: &std::path::Path,
+        args: &[String],
+        backend: Backend,
+        name: &str,
+    ) {
+        let on_end = {
+            let window = self.clone();
+            let bottle = bottle.clone();
+            move |session: &Session| {
+                let status = session.status();
+                if matches!(&status, Status::Exited(s) if s.success()) {
+                    window.close_if_unused();
+                    return;
+                }
+                window.present();
+                let toast = adw::Toast::builder()
+                    .title(glib::markup_escape_text(&format!(
+                        "{}: {}",
+                        session.name,
+                        status.describe()
+                    )))
+                    .button_label("Show Output")
+                    .timeout(10)
+                    .build();
+                let (window2, id) = (window.clone(), session.id);
+                toast.connect_button_clicked(move |_| {
+                    window2.show_processes(&bottle, Some(id));
+                });
+                window.toast(toast);
+            }
+        };
+        match self
+            .sessions()
+            .launch(bottle, target, args, backend, name, on_end)
+        {
+            Ok(session) => {
+                let toast = adw::Toast::builder()
+                    .title(glib::markup_escape_text(&format!("Starting {name}…")))
+                    .button_label("Show")
+                    .build();
+                let (window, bottle, id) = (self.clone(), bottle.clone(), session.id);
+                toast.connect_button_clicked(move |_| {
+                    window.show_processes(&bottle, Some(id));
+                });
+                self.toast(toast);
+            }
+            Err(e) => {
+                self.present();
+                self.error(format!("Could not start {name}: {e:#}"));
+            }
+        }
+    }
+
+    /// Close a window that was never shown, once nothing it started runs.
+    fn close_if_unused(&self) {
+        let window = self.0.window.clone();
+        let sessions = self.0.sessions.clone();
+        glib::idle_add_local_once(move || {
+            // Never shown, so never realized: `close` would do nothing.
+            if !window.is_visible() && !sessions.any_linked_running() {
+                window.destroy();
+            }
+        });
     }
 
     fn setup_actions(&self) {

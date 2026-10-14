@@ -651,6 +651,15 @@ impl Sessions {
         entries
     }
 
+    /// Whether a program this Butter started, in any bottle, still runs.
+    pub fn any_linked_running(&self) -> bool {
+        self.0
+            .list
+            .borrow()
+            .iter()
+            .any(|s| s.is_linked() && s.status().is_running())
+    }
+
     /// Whether anything Butter started in `bottle` still runs.
     pub fn is_running(&self, bottle: &str) -> bool {
         self.of(bottle).iter().any(|s| s.is_alive())

@@ -14,8 +14,14 @@ application written in Rust.
 - **Bottles** are Rosemary prefixes: each has its own Darwin filesystem (with
   the verified MiniDarwin base), its own runner, and its own settings and
   environment variables.
-- **Programs** are `.app` bundles or Mach-O executables saved in a bottle, so
-  they run with one click. You can also run one once without saving it.
+- **Applications** are listed on each bottle's page with their own names and
+  icons: Butter finds every `.app` bundle installed in the bottle's
+  `/Applications` (and each user's `~/Applications`) by itself. You can add
+  more, such as a bundle elsewhere or a Mach-O executable, or give one
+  arguments of its own. You can also run a program once without saving it.
+- **Shortcuts** put an application in your desktop's applications menu. They
+  also register it for the links and files it says it opens, so opening one
+  of those on the desktop starts it in its bottle.
 - The **Process Manager** lists everything running in a bottle. Each program
   gets a terminal of its own: you can read its output, type into it, send it
   signals and stop it. The power button in a bottle's header stops the whole
@@ -81,7 +87,9 @@ AppImage support is planned.
 
 1. Open **Runners** and install a Rosemary release.
 2. Create a bottle and choose that runner.
-3. Add a `.app` bundle or Mach-O executable and run it.
+3. Install an app into the bottle's `/Applications`, or add a `.app` bundle
+   or Mach-O executable, and run it.
+4. To start it from your desktop, choose **Create Shortcut** in its menu.
 
 ## Documentation
 
