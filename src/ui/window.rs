@@ -15,7 +15,7 @@ use crate::settings::Settings;
 use crate::shortcuts::Launch;
 use crate::ui::bottle_page::BottlePage;
 use crate::ui::bottles_page::BottlesPage;
-use crate::ui::process_manager::{self, ProcessManager};
+use crate::ui::process_manager::{ProcessManager, WeakProcessManager};
 use crate::ui::runners_page::RunnersPage;
 
 #[derive(Clone)]
@@ -44,7 +44,13 @@ pub struct Inner {
     /// Pages on the navigation stack. Their widgets hold only weak
     /// references back, so this keeps them alive until they are popped.
     open: RefCell<Vec<(adw::NavigationPage, Box<dyn std::any::Any>)>>,
+    /// Process managers by bottle. A popped out terminal keeps its manager
+    /// alive after its page is popped, and opening it again reuses it.
+    managers: RefCell<HashMap<String, WeakProcessManager>>,
 }
+
+/// The shell [`Window::open_shell`] starts, a path in the bottle.
+const SHELL: &str = "/bin/bash";
 
 impl Window {
     pub fn new(app: &adw::Application) -> Window {
@@ -129,6 +135,7 @@ impl Window {
             runners: OnceCell::new(),
             sessions: Sessions::new(),
             open: RefCell::default(),
+            managers: RefCell::default(),
         }));
         let weak = Rc::downgrade(&this.0);
         this.0.nav.connect_popped(move |_, popped| {
@@ -203,6 +210,37 @@ impl Window {
         backend: Backend,
         name: &str,
     ) {
+        if let Some(session) = self.start(bottle, target, args, backend, name) {
+            let toast = adw::Toast::builder()
+                .title(glib::markup_escape_text(&format!("Starting {name}…")))
+                .button_label("Show")
+                .build();
+            let (window, bottle, id) = (self.clone(), bottle.clone(), session.id);
+            toast.connect_button_clicked(move |_| {
+                window.show_processes(&bottle, Some(id));
+            });
+            self.toast(toast);
+        }
+    }
+
+    /// Start a shell in `bottle`, `rosemary run /bin/bash`, and show its
+    /// terminal in the process manager.
+    pub fn open_shell(&self, bottle: &Bottle) {
+        let shell = std::path::Path::new(SHELL);
+        if let Some(session) = self.start(bottle, shell, &[], Backend::Auto, "Shell") {
+            self.show_processes(bottle, Some(session.id));
+        }
+    }
+
+    /// Start `target` in `bottle`, reporting failure and how it ends.
+    fn start(
+        &self,
+        bottle: &Bottle,
+        target: &std::path::Path,
+        args: &[String],
+        backend: Backend,
+        name: &str,
+    ) -> Option<Rc<Session>> {
         let on_end = {
             let window = self.clone();
             let bottle = bottle.clone();
@@ -233,20 +271,11 @@ impl Window {
             .sessions()
             .launch(bottle, target, args, backend, name, on_end)
         {
-            Ok(session) => {
-                let toast = adw::Toast::builder()
-                    .title(glib::markup_escape_text(&format!("Starting {name}…")))
-                    .button_label("Show")
-                    .build();
-                let (window, bottle, id) = (self.clone(), bottle.clone(), session.id);
-                toast.connect_button_clicked(move |_| {
-                    window.show_processes(&bottle, Some(id));
-                });
-                self.toast(toast);
-            }
+            Ok(session) => Some(session),
             Err(e) => {
                 self.present();
                 self.error(format!("Could not start {name}: {e:#}"));
+                None
             }
         }
     }
@@ -411,19 +440,29 @@ impl Window {
 
     /// Open a bottle's process manager, showing `focus`'s terminal if given.
     pub fn show_processes(&self, bottle: &Bottle, focus: Option<u64>) {
-        let tag = process_manager::tag(&bottle.id);
-        let existing = self.0.open.borrow().iter().find_map(|(page, keep)| {
-            (page.tag().as_deref() == Some(tag.as_str()))
-                .then(|| keep.downcast_ref::<ProcessManager>().cloned())
-                .flatten()
-        });
+        let existing = self
+            .0
+            .managers
+            .borrow()
+            .get(&bottle.id)
+            .and_then(WeakProcessManager::upgrade);
         let manager = match existing {
             Some(manager) => {
-                self.0.nav.pop_to_page(manager.widget());
+                let page = manager.widget();
+                let shown = self.0.open.borrow().iter().any(|(p, _)| p == page);
+                if shown {
+                    self.0.nav.pop_to_page(page);
+                } else {
+                    self.push(page.clone(), manager.clone());
+                }
                 manager
             }
             None => {
                 let manager = ProcessManager::new(self, bottle);
+                self.0
+                    .managers
+                    .borrow_mut()
+                    .insert(bottle.id.clone(), manager.downgrade());
                 self.push(manager.widget().clone(), manager.clone());
                 manager
             }
@@ -469,6 +508,23 @@ fn shortcuts() -> gtk::ShortcutsWindow {
             <child><object class="GtkShortcutsShortcut">
               <property name="title">Quit</property>
               <property name="accelerator">&lt;Primary&gt;q</property>
+            </object></child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Terminal</property>
+            <child><object class="GtkShortcutsShortcut">
+              <property name="title">Copy</property>
+              <property name="accelerator">&lt;Primary&gt;&lt;Shift&gt;c</property>
+            </object></child>
+            <child><object class="GtkShortcutsShortcut">
+              <property name="title">Paste</property>
+              <property name="accelerator">&lt;Primary&gt;&lt;Shift&gt;v</property>
+            </object></child>
+            <child><object class="GtkShortcutsShortcut">
+              <property name="title">Select All</property>
+              <property name="accelerator">&lt;Primary&gt;&lt;Shift&gt;a</property>
             </object></child>
           </object>
         </child>

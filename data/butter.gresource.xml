@@ -11,6 +11,7 @@
     <file>scalable/ui/dialog-warning-symbolic.svg</file>
     <file>scalable/ui/edit-clear-all-symbolic.svg</file>
     <file>scalable/ui/edit-copy-symbolic.svg</file>
+    <file>scalable/ui/edit-paste-symbolic.svg</file>
     <file>scalable/ui/emblem-default-symbolic.svg</file>
     <file>scalable/ui/emblem-ok-symbolic.svg</file>
     <file>scalable/ui/emblem-system-symbolic.svg</file>
@@ -32,5 +33,6 @@
     <file>scalable/ui/view-more-symbolic.svg</file>
     <file>scalable/ui/view-refresh-symbolic.svg</file>
     <file>scalable/ui/window-close-symbolic.svg</file>
+    <file>scalable/ui/window-new-symbolic.svg</file>
   </gresource>
 </gresources>

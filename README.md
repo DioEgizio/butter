@@ -23,9 +23,11 @@ application written in Rust.
   also register it for the links and files it says it opens, so opening one
   of those on the desktop starts it in its bottle.
 - The **Process Manager** lists everything running in a bottle. Each program
-  gets a terminal of its own: you can read its output, type into it, send it
-  signals and stop it. The power button in a bottle's header stops the whole
-  bottle.
+  gets a terminal of its own: you can read its output, type into it, copy
+  and paste (right-click, or Ctrl+Shift+C and Ctrl+Shift+V), send it signals
+  and stop it. A terminal can be popped out into its own window and back in.
+  The terminal button opens a Rosemary shell (`rosemary run /bin/bash`) in the
+  bottle. The power button in a bottle's header stops the whole bottle.
 
 ## Install
 

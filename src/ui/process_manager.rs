@@ -1,9 +1,10 @@
 //! A bottle's process manager: its programs and every process they started,
-//! each program's terminal, and controls to signal and stop them.
+//! each program's terminal, and controls to signal and stop them. A
+//! terminal can be popped out into a window of its own, and back in.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -47,10 +48,28 @@ struct Focus {
 #[derive(Clone)]
 pub struct ProcessManager(Rc<Inner>);
 
+/// A process manager that may have been dropped.
+#[derive(Clone)]
+pub struct WeakProcessManager(Weak<Inner>);
+
+impl WeakProcessManager {
+    pub fn upgrade(&self) -> Option<ProcessManager> {
+        self.0.upgrade().map(ProcessManager)
+    }
+}
+
+/// A program's terminal shown in a window of its own.
+struct Popout {
+    window: adw::Window,
+    toolbar: adw::ToolbarView,
+    title: adw::WindowTitle,
+}
+
 struct Inner {
     page: adw::NavigationPage,
     window: Window,
     bottle: String,
+    bottle_name: String,
     split: adw::NavigationSplitView,
     list: gtk::ListBox,
     search: gtk::SearchEntry,
@@ -64,6 +83,12 @@ struct Inner {
     stack: gtk::Stack,
     terminals: gtk::Stack,
     terminal_widgets: RefCell<HashMap<u64, vte4::Terminal>>,
+    /// Terminals popped out into their own windows, by program. Each
+    /// window keeps the manager alive until it is closed.
+    popouts: RefCell<HashMap<u64, Popout>>,
+    /// The page's `process.` actions.
+    actions: gio::SimpleActionGroup,
+    pop_out: gtk::Button,
     signals: gtk::MenuButton,
     stop: gtk::Button,
     stop_badge: gtk::Image,
@@ -97,6 +122,11 @@ impl ProcessManager {
             .title_widget(&adw::WindowTitle::new("Processes", &bottle.config.name))
             .build();
         let clear = ui::icon_button("edit-clear-all-symbolic", "Clear Exited Programs");
+        let shell = gtk::Button::builder()
+            .icon_name("utilities-terminal-symbolic")
+            .tooltip_text("Open Rosemary Shell")
+            .build();
+        sidebar_header.pack_start(&shell);
         sidebar_header.pack_end(&power_button(window, &bottle.id));
         sidebar_header.pack_end(&clear);
         let sidebar_toolbar = adw::ToolbarView::new();
@@ -140,8 +170,14 @@ impl ProcessManager {
             .title_widget(&title)
             .show_back_button(false)
             .build();
+        let pop_out = gtk::Button::builder()
+            .icon_name("window-new-symbolic")
+            .tooltip_text("Pop Out Terminal")
+            .action_name("process.pop-out")
+            .build();
         header.pack_end(&stop);
         header.pack_end(&signals);
+        header.pack_start(&pop_out);
         let banner = adw::Banner::new("");
 
         let terminals = gtk::Stack::new();
@@ -165,6 +201,34 @@ impl ProcessManager {
                 )
                 .build(),
             Some("detached"),
+        );
+        let popped_buttons = gtk::Box::builder()
+            .spacing(12)
+            .halign(gtk::Align::Center)
+            .build();
+        let show_window = gtk::Button::builder()
+            .label("_Show Window")
+            .use_underline(true)
+            .action_name("process.show-window")
+            .build();
+        show_window.add_css_class("pill");
+        show_window.add_css_class("suggested-action");
+        let pop_in = gtk::Button::builder()
+            .label("_Return Here")
+            .use_underline(true)
+            .action_name("process.pop-in")
+            .build();
+        pop_in.add_css_class("pill");
+        popped_buttons.append(&show_window);
+        popped_buttons.append(&pop_in);
+        stack.add_named(
+            &adw::StatusPage::builder()
+                .icon_name("window-new-symbolic")
+                .title("Terminal Popped Out")
+                .description("This program's terminal is in a window of its own")
+                .child(&popped_buttons)
+                .build(),
+            Some("popped"),
         );
         stack.set_visible_child_name("empty");
         let content_toolbar = adw::ToolbarView::new();
@@ -206,6 +270,7 @@ impl ProcessManager {
             page,
             window: window.clone(),
             bottle: bottle.id.clone(),
+            bottle_name: bottle.config.name.clone(),
             split,
             list,
             search,
@@ -218,12 +283,15 @@ impl ProcessManager {
             stack,
             terminals,
             terminal_widgets: RefCell::default(),
+            popouts: RefCell::default(),
+            actions: gio::SimpleActionGroup::new(),
+            pop_out,
             signals,
             stop,
             stop_badge,
             asked: RefCell::default(),
         }));
-        this.connect_signals(&clear);
+        this.connect_signals(&clear, &shell);
         this.refresh();
         this
     }
@@ -236,7 +304,11 @@ impl ProcessManager {
         &self.0.window
     }
 
-    fn weak(&self) -> std::rc::Weak<Inner> {
+    pub fn downgrade(&self) -> WeakProcessManager {
+        WeakProcessManager(self.weak())
+    }
+
+    fn weak(&self) -> Weak<Inner> {
         Rc::downgrade(&self.0)
     }
 
@@ -247,7 +319,7 @@ impl ProcessManager {
         self.0.split.set_show_content(true);
     }
 
-    fn connect_signals(&self, clear: &gtk::Button) {
+    fn connect_signals(&self, clear: &gtk::Button, shell: &gtk::Button) {
         let weak = self.weak();
         self.0.list.set_filter_func(move |row| {
             let Some(inner) = weak.upgrade() else {
@@ -301,6 +373,15 @@ impl ProcessManager {
         });
 
         let weak = self.weak();
+        shell.connect_clicked(move |_| {
+            let Some(inner) = weak.upgrade() else { return };
+            match bottle::load(&inner.bottle) {
+                Some(bottle) => inner.window.open_shell(&bottle),
+                None => inner.window.error("This bottle no longer exists"),
+            }
+        });
+
+        let weak = self.weak();
         self.0.stop.connect_clicked(move |_| {
             if let Some(inner) = weak.upgrade() {
                 let this = ProcessManager(inner);
@@ -308,7 +389,7 @@ impl ProcessManager {
             }
         });
 
-        let group = gio::SimpleActionGroup::new();
+        let group = &self.0.actions;
         let action = gio::SimpleAction::new("signal", Some(glib::VariantTy::INT32));
         let weak = self.weak();
         action.connect_activate(move |_, parameter| {
@@ -319,7 +400,44 @@ impl ProcessManager {
             ProcessManager(inner).send(signal);
         });
         group.add_action(&action);
-        self.0.page.insert_action_group("process", Some(&group));
+        // Popping the focused program's terminal out and back in.
+        for name in ["pop-out", "pop-in", "show-window"] {
+            let action = gio::SimpleAction::new(name, None);
+            let weak = self.weak();
+            action.connect_activate(move |action, _| {
+                let Some(inner) = weak.upgrade() else { return };
+                let this = ProcessManager(inner);
+                let Some(focus) = this.focused() else { return };
+                let id = focus.session.id;
+                match action.name().as_str() {
+                    "pop-out" => this.pop_out(&focus.session),
+                    "pop-in" => this.pop_in(id),
+                    _ => {
+                        if let Some(popout) = this.0.popouts.borrow().get(&id) {
+                            popout.window.present();
+                        }
+                    }
+                }
+            });
+            group.add_action(&action);
+        }
+        self.0.page.insert_action_group("process", Some(group));
+
+        // Popped out terminals close with the main window.
+        let weak = self.weak();
+        self.window().widget().connect_destroy(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                let windows: Vec<_> = inner
+                    .popouts
+                    .borrow()
+                    .values()
+                    .map(|p| p.window.clone())
+                    .collect();
+                for window in windows {
+                    window.close();
+                }
+            }
+        });
 
         // Follow the bottle: when programs start or end, and every second
         // for the processes they start.
@@ -336,7 +454,7 @@ impl ProcessManager {
         let weak = self.weak();
         glib::timeout_add_seconds_local(1, move || match weak.upgrade() {
             Some(inner) => {
-                if inner.page.is_mapped() {
+                if inner.page.is_mapped() || !inner.popouts.borrow().is_empty() {
                     ProcessManager(inner).refresh();
                 }
                 glib::ControlFlow::Continue
@@ -393,7 +511,39 @@ impl ProcessManager {
         *self.0.entries.borrow_mut() = entries;
         self.select_row();
         self.0.list.invalidate_filter();
+        self.update_popouts();
         self.show();
+    }
+
+    /// Follow the programs whose terminals are popped out, and close the
+    /// windows of programs that were cleared.
+    fn update_popouts(&self) {
+        let mut cleared = Vec::new();
+        for (id, popout) in self.0.popouts.borrow().iter() {
+            let session = self
+                .0
+                .entries
+                .borrow()
+                .iter()
+                .find(|e| e.is_program && e.session.id == *id)
+                .map(|e| e.session.clone());
+            match session {
+                Some(session) => {
+                    popout.title.set_subtitle(&format!(
+                        "{} · {}",
+                        self.0.bottle_name,
+                        session.status().describe()
+                    ));
+                    if let Some(terminal) = self.0.terminal_widgets.borrow().get(id) {
+                        terminal.set_input_enabled(session.takes_input());
+                    }
+                }
+                None => cleared.push(popout.window.clone()),
+            }
+        }
+        for window in cleared {
+            window.close();
+        }
     }
 
     fn rebuild(&self, entries: &[Entry]) {
@@ -508,6 +658,9 @@ impl ProcessManager {
             inner.signals.set_sensitive(false);
             inner.stop.set_sensitive(false);
             inner.stop_badge.set_visible(false);
+            self.set_action_enabled("pop-out", false);
+            self.set_action_enabled("pop-in", false);
+            self.set_action_enabled("show-window", false);
             return;
         };
         let session = &focus.session;
@@ -525,16 +678,25 @@ impl ProcessManager {
         // Programs show their terminal, even after they end; other
         // processes only if they use it.
         let terminal = focus.is_program || focus.on_terminal;
+        let popped = inner.popouts.borrow().contains_key(&session.id);
         if terminal {
             let widget = self.terminal(session);
             widget.set_input_enabled(session.takes_input());
-            inner
-                .terminals
-                .set_visible_child_name(&session.id.to_string());
-            inner.stack.set_visible_child_name("terminal");
+            if popped {
+                inner.stack.set_visible_child_name("popped");
+            } else {
+                inner
+                    .terminals
+                    .set_visible_child_name(&session.id.to_string());
+                inner.stack.set_visible_child_name("terminal");
+            }
         } else {
             inner.stack.set_visible_child_name("detached");
         }
+        self.set_action_enabled("pop-out", terminal && !popped);
+        self.set_action_enabled("pop-in", terminal && popped);
+        self.set_action_enabled("show-window", terminal && popped);
+        inner.pop_out.set_visible(!popped || !terminal);
 
         let banner = if !status.is_running() && focus.is_program {
             Some(status.describe())
@@ -561,6 +723,98 @@ impl ProcessManager {
         inner
             .stop
             .set_tooltip_text(Some(if asked { "Force Stop" } else { "Stop" }));
+    }
+
+    fn set_action_enabled(&self, name: &str, enabled: bool) {
+        let action = self
+            .0
+            .actions
+            .lookup_action(name)
+            .and_then(|action| action.downcast::<gio::SimpleAction>().ok());
+        if let Some(action) = action {
+            action.set_enabled(enabled);
+        }
+    }
+
+    /// Move `session`'s terminal into a window of its own.
+    fn pop_out(&self, session: &Rc<Session>) {
+        let id = session.id;
+        if let Some(popout) = self.0.popouts.borrow().get(&id) {
+            popout.window.present();
+            return;
+        }
+        let terminal = self.terminal(session);
+        let Some(scrolled) = terminal.parent() else {
+            return;
+        };
+        self.0.terminals.remove(&scrolled);
+
+        let title = adw::WindowTitle::new(&session.name, &self.0.bottle_name);
+        let header = adw::HeaderBar::builder().title_widget(&title).build();
+        let pop_in = gtk::Button::builder()
+            .label("Pop In")
+            .tooltip_text("Return the Terminal to the Process Manager")
+            .build();
+        header.pack_start(&pop_in);
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(&scrolled));
+        let window = adw::Window::builder()
+            .title(format!("{} – {}", session.name, self.0.bottle_name))
+            .default_width(800)
+            .default_height(500)
+            .width_request(360)
+            .height_request(200)
+            .content(&toolbar)
+            .build();
+        if let Some(app) = self.window().widget().application() {
+            window.set_application(Some(&app));
+        }
+        let weak = window.downgrade();
+        pop_in.connect_clicked(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.close();
+            }
+        });
+        // Holds the manager, so the terminal has somewhere to return to
+        // even when the manager's page was left.
+        let this = self.clone();
+        window.connect_close_request(move |_| {
+            this.reattach(id);
+            glib::Propagation::Proceed
+        });
+        self.0.popouts.borrow_mut().insert(
+            id,
+            Popout {
+                window: window.clone(),
+                toolbar,
+                title,
+            },
+        );
+        self.update_popouts();
+        window.present();
+        terminal.grab_focus();
+        self.show();
+    }
+
+    /// Return `id`'s popped out terminal to the process manager.
+    fn pop_in(&self, id: u64) {
+        let window = self.0.popouts.borrow().get(&id).map(|p| p.window.clone());
+        if let Some(window) = window {
+            window.close();
+        }
+    }
+
+    /// Move the terminal of a closing popped out window back.
+    fn reattach(&self, id: u64) {
+        let Some(popout) = self.0.popouts.borrow_mut().remove(&id) else {
+            return;
+        };
+        if let Some(scrolled) = popout.toolbar.content() {
+            popout.toolbar.set_content(None::<&gtk::Widget>);
+            self.0.terminals.add_named(&scrolled, Some(&id.to_string()));
+        }
+        self.show();
     }
 
     /// The terminal showing `session`'s output, made the first time.
@@ -609,6 +863,21 @@ impl ProcessManager {
             }
             glib::ControlFlow::Continue
         });
+
+        let actions = add_clipboard(&terminal);
+        let weak = self.weak();
+        let id = session.id;
+        let popped = gio::SimpleAction::new("pop-out", None);
+        popped.connect_activate(move |_, _| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = ProcessManager(inner);
+            if this.0.popouts.borrow().contains_key(&id) {
+                this.pop_in(id);
+            } else if let Some(session) = this.window().sessions().get(id) {
+                this.pop_out(&session);
+            }
+        });
+        actions.add_action(&popped);
 
         let scrolled = gtk::ScrolledWindow::builder()
             .child(&terminal)
@@ -682,7 +951,7 @@ impl ProcessManager {
 }
 
 /// The navigation tag of a bottle's process manager.
-pub fn tag(bottle: &str) -> String {
+fn tag(bottle: &str) -> String {
     format!("processes:{bottle}")
 }
 
@@ -728,6 +997,101 @@ fn signal_menu() -> gio::Menu {
         menu.append_section(None, &part);
     }
     menu
+}
+
+/// Copy and paste for a terminal: a context menu, and the usual terminal
+/// shortcuts, which leave Ctrl+C and Ctrl+V to the program.
+/// Returns its `terminal.` actions.
+fn add_clipboard(terminal: &vte4::Terminal) -> gio::SimpleActionGroup {
+    let group = gio::SimpleActionGroup::new();
+    let copy = gio::SimpleAction::new("copy", None);
+    copy.set_enabled(false);
+    let weak = terminal.downgrade();
+    copy.connect_activate(move |_, _| {
+        if let Some(terminal) = weak.upgrade() {
+            terminal.copy_clipboard_format(vte4::Format::Text);
+        }
+    });
+    group.add_action(&copy);
+    // Pasting sends the text as input, like typing it.
+    let paste = gio::SimpleAction::new("paste", None);
+    let weak = terminal.downgrade();
+    paste.connect_activate(move |_, _| {
+        if let Some(terminal) = weak.upgrade() {
+            terminal.paste_clipboard();
+        }
+    });
+    group.add_action(&paste);
+    let select_all = gio::SimpleAction::new("select-all", None);
+    let weak = terminal.downgrade();
+    select_all.connect_activate(move |_, _| {
+        if let Some(terminal) = weak.upgrade() {
+            terminal.select_all();
+        }
+    });
+    group.add_action(&select_all);
+    terminal.insert_action_group("terminal", Some(&group));
+
+    terminal.connect_selection_changed(glib::clone!(
+        #[weak]
+        copy,
+        move |terminal| copy.set_enabled(terminal.has_selection())
+    ));
+    paste.set_enabled(terminal.is_input_enabled());
+    terminal.connect_input_enabled_notify(glib::clone!(
+        #[weak]
+        paste,
+        move |terminal| paste.set_enabled(terminal.is_input_enabled())
+    ));
+
+    // Before the terminal's own handling, which would send them to the program.
+    let shortcuts = gtk::ShortcutController::new();
+    shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
+    for (accel, action) in [
+        ("<Control><Shift>c", "terminal.copy"),
+        ("<Control><Shift>v", "terminal.paste"),
+        ("<Control><Shift>a", "terminal.select-all"),
+    ] {
+        shortcuts.add_shortcut(gtk::Shortcut::new(
+            gtk::ShortcutTrigger::parse_string(accel),
+            Some(gtk::NamedAction::new(action)),
+        ));
+    }
+    terminal.add_controller(shortcuts);
+
+    let menu = gio::Menu::new();
+    let edit = gio::Menu::new();
+    edit.append(Some("_Copy"), Some("terminal.copy"));
+    edit.append(Some("_Paste"), Some("terminal.paste"));
+    edit.append(Some("Select _All"), Some("terminal.select-all"));
+    menu.append_section(None, &edit);
+    let window = gio::Menu::new();
+    window.append(Some("Pop _Out / Pop In"), Some("terminal.pop-out"));
+    menu.append_section(None, &window);
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+    popover.set_parent(terminal);
+    terminal.connect_destroy(glib::clone!(
+        #[weak]
+        popover,
+        move |_| popover.unparent()
+    ));
+    let click = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_SECONDARY)
+        .propagation_phase(gtk::PropagationPhase::Capture)
+        .build();
+    click.connect_pressed(glib::clone!(
+        #[weak]
+        popover,
+        move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.popup();
+        }
+    ));
+    terminal.add_controller(click);
+    group
 }
 
 fn style_terminal(terminal: &vte4::Terminal) {

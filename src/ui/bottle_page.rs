@@ -105,6 +105,7 @@ impl BottlePage {
                 let menu = gtk::gio::Menu::new();
                 menu.append(Some("Run App _Bundle…"), Some("bottle.run-bundle"));
                 menu.append(Some("Run _Executable…"), Some("bottle.run-executable"));
+                menu.append(Some("Open Rosemary _Shell"), Some("bottle.open-shell"));
                 menu
             })
             .build();
@@ -196,6 +197,15 @@ impl BottlePage {
             });
             group.add_action(&action);
         }
+        let shell = gtk::gio::SimpleAction::new("open-shell", None);
+        let weak = self.weak();
+        shell.connect_activate(move |_, _| {
+            if let Some(inner) = weak.upgrade() {
+                let this = BottlePage(inner);
+                this.window().open_shell(&this.bottle());
+            }
+        });
+        group.add_action(&shell);
         self.0.page.insert_action_group("bottle", Some(&group));
     }
 
