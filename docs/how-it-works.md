@@ -74,7 +74,10 @@ only opens if something went wrong.
 
 The links and files the desktop passes are given to the app as URLs, which
 Rosemary hands to `-[NSApplicationDelegate application:openURLs:]`. Links
-are passed unchanged. A file inside the bottle becomes a `file:` URL of its
+are passed unchanged, and the first is also given to Rosemary as
+`-protocolString`, `-protocolUrl` and `-protocolUri`, which it puts in
+`NSArgumentDomain` as macOS does for launch arguments; `Info.plist` does not
+say which one an application reads. A file inside the bottle becomes a `file:` URL of its
 path there, and any other file one under `/Volumes/Host`, where the bottle
 sees the host's files.
 

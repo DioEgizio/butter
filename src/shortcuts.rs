@@ -224,11 +224,38 @@ impl Launch {
     /// The program's arguments: its own, then what it was asked to open,
     /// spelled the way it sees them in `bottle`.
     pub fn arguments(&self, bottle: &Bottle) -> Vec<String> {
-        let drive = bottle.drive();
+        self.arguments_in(&bottle.drive())
+    }
+
+    fn arguments_in(&self, drive: &Path) -> Vec<String> {
         let mut args = self.args.clone();
-        args.extend(self.open.iter().map(|a| guest_url(&drive, a)));
+        let open: Vec<String> = self.open.iter().map(|a| guest_url(drive, a)).collect();
+        // Rosemary hands these to NSUserDefaults' NSArgumentDomain, as macOS
+        // does for a launch argument. Info.plist does not say which one an
+        // application reads, so the first link is given under all of them.
+        if let Some(link) = open.iter().find(|a| is_link(a)) {
+            for flag in PROTOCOL_FLAGS {
+                args.extend([flag.to_string(), link.clone()]);
+            }
+        }
+        args.extend(open);
         args
     }
+}
+
+/// The arguments Rosemary takes for the link an application was opened with.
+const PROTOCOL_FLAGS: [&str; 3] = ["-protocolString", "-protocolUrl", "-protocolUri"];
+
+/// Whether `arg` is a link to a protocol handler rather than a file.
+fn is_link(arg: &str) -> bool {
+    let Some((scheme, _)) = arg.split_once(':') else {
+        return false;
+    };
+    !scheme.is_empty()
+        && !scheme.eq_ignore_ascii_case("file")
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
 }
 
 /// A link or file to open, as a URL the guest can follow. Files become
@@ -497,6 +524,33 @@ mod tests {
         assert_eq!(launch.args, ["-v"]);
         assert_eq!(launch.target, PathBuf::from("/b/Foo.app"));
         assert_eq!(launch.open, ["foo://bar", "/home/u/a b.txt"]);
+    }
+
+    #[test]
+    fn links_are_passed_as_protocol_arguments() {
+        let launch = Launch {
+            bottle: "g".into(),
+            target: "/b/Foo.app".into(),
+            args: vec![],
+            backend: Backend::Auto,
+            open: vec!["foo://bar".into(), "/home/u/a.txt".into()],
+        };
+        let args = launch.arguments_in(Path::new("/data/g/root"));
+        assert_eq!(
+            args[..6],
+            [
+                "-protocolString",
+                "foo://bar",
+                "-protocolUrl",
+                "foo://bar",
+                "-protocolUri",
+                "foo://bar"
+            ]
+        );
+        assert_eq!(args[6], "foo://bar");
+        assert!(is_link("steam://run/1"));
+        assert!(!is_link("file:///a"));
+        assert!(!is_link("/a:b"));
     }
 
     #[test]
