@@ -342,7 +342,12 @@ exec "$here/../Rosemary/bin/rosemary" "$@"
 pub fn unpack_tool(archive: &Path, dest: &Path, reporter: &Reporter) -> anyhow::Result<()> {
     std::fs::create_dir_all(dest)?;
     let file = std::fs::File::open(archive)?;
-    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let reader: Box<dyn Read> = if archive.extension().is_some_and(|e| e == "zst") {
+        Box::new(zstd::stream::read::Decoder::new(file)?)
+    } else {
+        Box::new(flate2::read::GzDecoder::new(file))
+    };
+    let mut tar = tar::Archive::new(reader);
     tar.set_preserve_permissions(true);
     for entry in tar.entries()? {
         reporter.check_cancelled()?;

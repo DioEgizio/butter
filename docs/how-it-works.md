@@ -88,7 +88,8 @@ Butter writes the desktop entry into `~/.local/share/applications` itself.
 ## How an official build is installed
 
 Each Rosemary release attaches a Steam compatibility tool,
-`rosemary-steam-tool-<version>-<arch>.tar.gz`. It contains the same
+`rosemary-steam-tool-<version>-<arch>.tar.zst` (Butter falls back to the
+larger `.tar.gz` when a release has no `.tar.zst`). It contains the same
 self-contained bundle as the release's AppImage: Rosemary, the SDL 3, OpenAL
 and other libraries it needs (often newer than the host's), and a glibc for
 hosts whose own is too old. It runs outside Steam too. The only thing it

@@ -68,13 +68,18 @@ impl Release {
     }
 
     /// The Steam compatibility tool archive built for this computer's
-    /// architecture, such as `rosemary-steam-tool-0.2.0-x86_64.tar.gz`. It
+    /// architecture, such as `rosemary-steam-tool-0.2.0-x86_64.tar.zst`. It
     /// carries the same self-contained bundle as the AppImage, unpacked.
+    /// The smaller `.tar.zst` is preferred over the `.tar.gz` of the same
+    /// content, to save on download bandwidth.
     pub fn steam_tool(&self) -> Option<&Asset> {
-        let suffix = format!("-{}.tar.gz", std::env::consts::ARCH);
-        self.assets
-            .iter()
-            .find(|a| a.name.starts_with("rosemary-steam-tool-") && a.name.ends_with(&suffix))
+        let arch = std::env::consts::ARCH;
+        ["tar.zst", "tar.gz"].iter().find_map(|ext| {
+            let suffix = format!("-{arch}.{ext}");
+            self.assets
+                .iter()
+                .find(|a| a.name.starts_with("rosemary-steam-tool-") && a.name.ends_with(&suffix))
+        })
     }
 
     pub fn asset(&self, name: &str) -> Option<&Asset> {
@@ -399,20 +404,29 @@ mod tests {
         let json = format!(
             r#"[{{"tag_name":"v0.2.0","assets":[
                 {{"name":"Rosemary-0.2.0-{arch}.AppImage","browser_download_url":"a"}},
-                {{"name":"rosemary-steam-tool-0.2.0-{arch}.tar.zst","browser_download_url":"z"}},
                 {{"name":"rosemary-steam-tool-0.2.0-other.tar.gz","browser_download_url":"o"}},
-                {{"name":"rosemary-steam-tool-0.2.0-{arch}.tar.gz","browser_download_url":"g","size":5,
+                {{"name":"rosemary-steam-tool-0.2.0-{arch}.tar.gz","browser_download_url":"g","size":5}},
+                {{"name":"rosemary-steam-tool-0.2.0-{arch}.tar.zst","browser_download_url":"z","size":3,
                   "digest":"sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}
             ]}}]"#
         );
         let list = parse(&json).unwrap();
         let tool = list[0].steam_tool().unwrap();
-        assert_eq!(tool.browser_download_url, "g");
+        assert_eq!(tool.browser_download_url, "z");
         assert_eq!(
             tool.sha256().as_deref(),
             Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
         );
         assert!(list[0].asset("SHA256SUMS").is_none());
+
+        // Without a `.tar.zst`, the `.tar.gz` is used.
+        let json = format!(
+            r#"[{{"tag_name":"v0.2.0","assets":[
+                {{"name":"rosemary-steam-tool-0.2.0-{arch}.tar.gz","browser_download_url":"g"}}
+            ]}}]"#
+        );
+        let list = parse(&json).unwrap();
+        assert_eq!(list[0].steam_tool().unwrap().browser_download_url, "g");
     }
 
     #[test]
