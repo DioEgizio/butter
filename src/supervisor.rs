@@ -135,6 +135,18 @@ pub fn main(args: Vec<OsString>) -> i32 {
             return 1;
         }
     };
+    // The keeper leads the terminal's session, as a shell does, rather than
+    // the program: when a session leader ends, the kernel hangs up (SIGHUP)
+    // everything left in the terminal's foreground group. That would kill
+    // what the program leaves behind as it quits, such as a self-updater it
+    // starts on its way out. The keeper itself ignores SIGHUP, which it
+    // raises when it closes the terminal as it exits.
+    // SAFETY: plain syscalls. setsid fails if Butter already made us a leader.
+    let controls = unsafe {
+        libc::setsid();
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY as _, 0) >= 0
+    };
 
     let mut command = Command::new(&program);
     command.args(&rest);
@@ -148,10 +160,21 @@ pub fn main(args: Vec<OsString>) -> i32 {
             .stderr(Stdio::from(e));
         // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {
-            command.pre_exec(|| {
-                // A session of its own, with the terminal as its controlling
-                // one, so Ctrl+C and friends reach it as they would in a terminal.
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+            command.pre_exec(move || {
+                // Ignored signals stay ignored across exec.
+                libc::signal(libc::SIGHUP, libc::SIG_DFL);
+                // The terminal's foreground group, so Ctrl+C and friends
+                // reach it as they would in a terminal.
+                if controls {
+                    // Taking the terminal from the background raises SIGTTOU.
+                    libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+                    let taken = libc::setpgid(0, 0) == 0 && libc::tcsetpgrp(0, libc::getpid()) == 0;
+                    libc::signal(libc::SIGTTOU, libc::SIG_DFL);
+                    if !taken {
+                        return Err(io::Error::last_os_error());
+                    }
+                } else if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    // The keeper could not take the terminal: lead it ourselves.
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())

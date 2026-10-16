@@ -130,3 +130,48 @@ fn reports_programs_that_cannot_start() {
     assert!(line.starts_with("failed "), "{line}");
     assert_eq!(keeper.wait().unwrap().code(), Some(127));
 }
+
+#[test]
+fn programs_left_behind_survive_the_program_ending() {
+    // Like a self-updater: the program starts a helper in its own process
+    // group, without detaching it or ignoring SIGHUP, and quits. The helper
+    // must not be hung up when the program ends.
+    let dir = std::env::temp_dir().join(format!("butter-updater-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("updated");
+    let script = format!(
+        "(sleep 0.5; touch '{}') </dev/null >/dev/null 2>&1 & exit 0",
+        marker.display()
+    );
+    let (ours, theirs) = UnixStream::pair().unwrap();
+    let fd = theirs.as_raw_fd();
+    let mut keeper = Command::new(env!("CARGO_BIN_EXE_butter"));
+    keeper
+        .args(["--supervise", "--", "sh", "-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null());
+    unsafe {
+        keeper.pre_exec(move || {
+            libc::dup2(fd, 3);
+            // As Butter starts it: out of the caller's session.
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut keeper = keeper.spawn().unwrap();
+    drop(theirs);
+    let mut control = BufReader::new(ours);
+    let mut line = String::new();
+    control.read_line(&mut line).unwrap();
+    assert!(line.starts_with("started "), "{line}");
+    line.clear();
+    control.read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "exited 0");
+
+    assert_eq!(keeper.wait().unwrap().code(), Some(0));
+    assert!(
+        marker.exists(),
+        "the helper was killed when the program ended"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
