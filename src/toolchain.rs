@@ -250,11 +250,12 @@ pub fn build_requirements() -> Vec<Requirement> {
             .unwrap_or_else(|| "not found".into()),
     });
     // (name, pkg-config modules to try, minimum version, optional)
-    let libraries: [(&str, &[&str], Option<&str>, bool); 5] = [
+    let libraries: [(&str, &[&str], Option<&str>, bool); 6] = [
         ("SDL 3", &["sdl3"], Some("3.4.0"), false),
         ("libxkbcommon", &["xkbcommon"], None, false),
         ("libcurl", &["libcurl"], None, false),
         ("zlib", &["zlib"], None, false),
+        ("GStreamer", &["gstreamer-1.0"], None, false),
         (
             "WebKitGTK",
             &["webkitgtk-6.0", "webkit2gtk-4.1", "webkit2gtk-4.0"],

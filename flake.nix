@@ -180,6 +180,7 @@
                 libxkbcommon
                 curl
                 zlib
+                gst_all_1.gstreamer
                 webkitgtk_6_0
                 # make check
                 desktop-file-utils
